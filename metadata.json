@@ -1,0 +1,7 @@
+{
+  "name": "CONTROLE DE ESTOQUE - CARPA",
+  "description": "Professional inventory management system with stock tracking, movement history, multi-user support, and Excel export/import capabilities.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
