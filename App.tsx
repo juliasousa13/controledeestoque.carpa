@@ -29,7 +29,9 @@ import {
   Loader2,
   Wifi,
   WifiOff,
-  Database
+  Database,
+  Filter,
+  XCircle
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile } from './types';
 import { Logo } from './components/Logo';
@@ -92,9 +94,13 @@ export default function App() {
   // Inventory UI State
   const [viewMode, setViewMode] = useState<'GRID' | 'LIST'>('LIST'); 
   const [searchTerm, setSearchTerm] = useState('');
+  const [deptFilter, setDeptFilter] = useState(''); // New Dept Filter
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showLowStockOnly, setShowLowStockOnly] = useState(false); 
   
+  // Settings UI State
+  const [newDeptInput, setNewDeptInput] = useState('');
+
   // Modal States
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
@@ -106,6 +112,7 @@ export default function App() {
   // Delete Confirmation State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [itemsToDelete, setItemsToDelete] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   // Sidebar Mobile
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -235,6 +242,8 @@ export default function App() {
 
   const filteredItems = useMemo(() => {
     let result = items;
+    
+    // 1. Filter by Search Term
     if (searchTerm) {
       const lowerTerm = searchTerm.toLowerCase().trim();
       result = result.filter(item => {
@@ -245,11 +254,19 @@ export default function App() {
         return name.includes(lowerTerm) || dept.includes(lowerTerm) || loc.includes(lowerTerm) || id.includes(lowerTerm);
       });
     }
+
+    // 2. Filter by Department Dropdown
+    if (deptFilter) {
+      result = result.filter(item => item.department === deptFilter);
+    }
+
+    // 3. Filter by Low Stock
     if (showLowStockOnly) {
       result = result.filter(item => item.currentStock <= item.minStock);
     }
+    
     return result;
-  }, [items, searchTerm, showLowStockOnly]);
+  }, [items, searchTerm, deptFilter, showLowStockOnly]);
 
   // -- Actions --
 
@@ -371,21 +388,41 @@ export default function App() {
   };
 
   const confirmDelete = async () => {
-    const { error } = await supabase.from('inventory_items').delete().in('id', itemsToDelete);
+    setIsDeleting(true);
     
-    if (error) {
-      alert("Erro ao excluir itens: " + error.message);
-    } else {
-       // Clear local selection
-       const newSelected = new Set(selectedItems);
-       itemsToDelete.forEach(id => newSelected.delete(id));
-       setSelectedItems(newSelected);
-       if (editingItem && itemsToDelete.includes(editingItem.id)) {
-        closeItemModal();
-      }
+    try {
+        // 1. Primeiro, excluir as movimentações associadas (para evitar erro de Foreign Key)
+        const { error: moveError } = await supabase
+            .from('movements')
+            .delete()
+            .in('item_id', itemsToDelete);
+
+        if (moveError) throw new Error("Erro ao limpar histórico: " + moveError.message);
+
+        // 2. Agora sim, excluir os itens
+        const { error: itemError } = await supabase
+            .from('inventory_items')
+            .delete()
+            .in('id', itemsToDelete);
+        
+        if (itemError) throw new Error(itemError.message);
+
+        // Limpar seleção local
+        const newSelected = new Set(selectedItems);
+        itemsToDelete.forEach(id => newSelected.delete(id));
+        setSelectedItems(newSelected);
+        
+        if (editingItem && itemsToDelete.includes(editingItem.id)) {
+            closeItemModal();
+        }
+
+    } catch (error: any) {
+        alert("Erro ao excluir: " + error.message);
+    } finally {
+        setIsDeleting(false);
+        setIsDeleteModalOpen(false);
+        setItemsToDelete([]);
     }
-    setIsDeleteModalOpen(false);
-    setItemsToDelete([]);
   };
 
   const handleStockMovement = async (e: React.FormEvent) => {
@@ -517,11 +554,10 @@ export default function App() {
     }
   };
 
-  // --- Views ---
+  // --- Views Render Functions ---
 
-  const SettingsView = () => {
-     const [newD, setNewD] = useState('');
-     const handleAdd = () => { if(newD) { addDepartment(newD); setNewD(''); }};
+  const renderSettingsView = () => {
+     const handleAdd = () => { if(newDeptInput) { addDepartment(newDeptInput); setNewDeptInput(''); }};
 
      return (
         <div className="space-y-6 animate-fade-in max-w-4xl mx-auto">
@@ -548,8 +584,8 @@ export default function App() {
                 </h3>
                 <div className="flex gap-2 mb-6">
                     <input 
-                        value={newD}
-                        onChange={e => setNewD(e.target.value)}
+                        value={newDeptInput}
+                        onChange={e => setNewDeptInput(e.target.value)}
                         placeholder="Novo departamento..."
                         className="flex-1 px-4 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-brand-500 dark:text-white"
                     />
@@ -589,10 +625,7 @@ export default function App() {
      );
   };
 
-  // Same Dashboard, Inventory, and Login views structure as before, 
-  // but using the updated state and functions hooked to Supabase.
-  
-  const DashboardView = () => {
+  const renderDashboardView = () => {
     const totalItems = items.length;
     return (
       <div className="space-y-6 animate-fade-in">
@@ -658,20 +691,47 @@ export default function App() {
     );
   };
 
-  const InventoryView = () => (
+  const renderInventoryView = () => (
     <div className="space-y-6 animate-fade-in h-full flex flex-col">
-      <div className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row gap-4 items-center justify-between sticky top-0 z-20">
-        <div className="relative w-full md:w-96">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search className="h-5 w-5 text-slate-400" /></div>
-          <input
-            type="text"
-            className="block w-full pl-10 pr-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg leading-5 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            placeholder="Buscar nome, locação, ID, depto..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+      <div className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col xl:flex-row gap-4 items-center justify-between sticky top-0 z-20">
+        
+        {/* Improved Search Bar */}
+        <div className="flex flex-col md:flex-row gap-3 w-full xl:w-auto flex-1">
+            <div className="relative flex-1">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search className="h-5 w-5 text-slate-400" /></div>
+                <input
+                    type="text"
+                    className="block w-full pl-10 pr-10 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg leading-5 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500 transition"
+                    placeholder="Pesquisar nome, código, locação..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                />
+                {searchTerm && (
+                    <button onClick={() => setSearchTerm('')} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+                        <XCircle className="w-5 h-5" />
+                    </button>
+                )}
+            </div>
+            
+            <div className="relative w-full md:w-56">
+                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Filter className="h-4 w-4 text-slate-400" /></div>
+                 <select 
+                    className="block w-full pl-9 pr-8 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg leading-5 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 appearance-none cursor-pointer"
+                    value={deptFilter}
+                    onChange={(e) => setDeptFilter(e.target.value)}
+                 >
+                    <option value="">Todos Departamentos</option>
+                    {departments.map(d => <option key={d} value={d}>{d}</option>)}
+                 </select>
+                 <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none"><span className="text-slate-500">▼</span></div>
+            </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto justify-end">
+           <span className="text-xs font-medium text-slate-500 dark:text-slate-400 px-2 hidden sm:block">
+              Exibindo {filteredItems.length} de {items.length} itens
+           </span>
            {showLowStockOnly && (
               <button onClick={() => setShowLowStockOnly(false)} className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-sm"><X className="w-4 h-4" /> Ver Todos</button>
            )}
@@ -679,8 +739,8 @@ export default function App() {
             <button type="button" onClick={promptDeleteBulk} className="flex items-center justify-center gap-2 bg-red-100 text-red-700 hover:bg-red-200 px-3 py-2 rounded-lg font-medium transition text-sm"><Trash2 className="w-4 h-4" /> Excluir ({selectedItems.size})</button>
           )}
           <div className="h-6 w-px bg-slate-300 dark:bg-slate-600 mx-2 hidden md:block"></div>
-          <button onClick={() => setViewMode('LIST')} className={`p-2 rounded-lg transition ${viewMode === 'LIST' ? 'bg-brand-100 text-brand-600' : 'text-slate-500'}`} title="Lista"><ListIcon className="w-5 h-5" /></button>
-          <button onClick={() => setViewMode('GRID')} className={`p-2 rounded-lg transition ${viewMode === 'GRID' ? 'bg-brand-100 text-brand-600' : 'text-slate-500'}`} title="Grade"><GridIcon className="w-5 h-5" /></button>
+          <button onClick={() => setViewMode('LIST')} className={`p-2 rounded-lg transition ${viewMode === 'LIST' ? 'bg-brand-100 text-brand-600' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'}`} title="Lista"><ListIcon className="w-5 h-5" /></button>
+          <button onClick={() => setViewMode('GRID')} className={`p-2 rounded-lg transition ${viewMode === 'GRID' ? 'bg-brand-100 text-brand-600' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'}`} title="Grade"><GridIcon className="w-5 h-5" /></button>
           <div className="h-6 w-px bg-slate-300 dark:bg-slate-600 mx-2 hidden md:block"></div>
           <div className="flex items-center gap-1">
              <label className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer transition" title="Importar CSV"><Upload className="w-5 h-5" /><input type="file" accept=".csv" className="hidden" onChange={importCSV} /></label>
@@ -693,11 +753,17 @@ export default function App() {
 
       <div className="flex-1 overflow-y-auto min-h-0 rounded-xl">
         {filteredItems.length === 0 ? (
-          <div className="text-center py-20">
-            <Package className="w-16 h-16 mx-auto text-slate-300 mb-4" />
+          <div className="text-center py-20 bg-white dark:bg-slate-800 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 mx-4">
+            <Search className="w-16 h-16 mx-auto text-slate-300 mb-4" />
             <h3 className="text-lg font-medium text-slate-900 dark:text-white">Nenhum item encontrado</h3>
-            <p className="text-slate-500">Tente buscar por outro termo ou adicione um novo item.</p>
-            {showLowStockOnly && <button onClick={() => setShowLowStockOnly(false)} className="mt-4 text-brand-600 hover:underline">Ver todo o estoque</button>}
+            <p className="text-slate-500">
+                {searchTerm || deptFilter ? "Tente ajustar seus filtros de pesquisa." : "Comece adicionando novos materiais ao estoque."}
+            </p>
+            {(showLowStockOnly || searchTerm || deptFilter) && (
+                <button onClick={() => { setShowLowStockOnly(false); setSearchTerm(''); setDeptFilter(''); }} className="mt-4 text-brand-600 hover:underline font-medium">
+                    Limpar todos os filtros
+                </button>
+            )}
           </div>
         ) : viewMode === 'LIST' ? (
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -899,9 +965,9 @@ export default function App() {
               {currentView === AppView.SETTINGS && 'Configurações do Sistema'}
             </h1>
             
-            {currentView === AppView.DASHBOARD && <DashboardView />}
-            {currentView === AppView.INVENTORY && <InventoryView />}
-            {currentView === AppView.SETTINGS && <SettingsView />}
+            {currentView === AppView.DASHBOARD && renderDashboardView()}
+            {currentView === AppView.INVENTORY && renderInventoryView()}
+            {currentView === AppView.SETTINGS && renderSettingsView()}
             {currentView === AppView.MOVEMENTS && (
               <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
                 <table className="w-full text-sm text-left">
@@ -1049,10 +1115,14 @@ export default function App() {
             <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center">
                <div className="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4"><Trash2 className="w-8 h-8 text-red-600 dark:text-red-500" /></div>
                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Excluir Material?</h3>
-               <p className="text-slate-500 dark:text-slate-400 mb-6">Você está prestes a excluir permanentemente <strong>{itemsToDelete.length}</strong> item(ns). Esta ação não pode ser desfeita.</p>
+               <p className="text-slate-500 dark:text-slate-400 mb-6">
+                   Você está prestes a excluir permanentemente <strong>{itemsToDelete.length}</strong> item(ns) e todo seu histórico de movimentações.
+               </p>
                <div className="flex gap-3">
-                  <button type="button" onClick={() => { setIsDeleteModalOpen(false); setItemsToDelete([]); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg font-medium transition">Cancelar</button>
-                  <button type="button" onClick={confirmDelete} className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold shadow-lg shadow-red-500/30 transition transform active:scale-95">Sim, Excluir</button>
+                  <button type="button" disabled={isDeleting} onClick={() => { setIsDeleteModalOpen(false); setItemsToDelete([]); }} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg font-medium transition">Cancelar</button>
+                  <button type="button" disabled={isDeleting} onClick={confirmDelete} className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold shadow-lg shadow-red-500/30 transition transform active:scale-95 flex items-center justify-center gap-2">
+                      {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Sim, Excluir"}
+                  </button>
                </div>
             </div>
          </div>
