@@ -24,7 +24,9 @@ import {
   CheckSquare,
   Square,
   Save,
-  UserPlus
+  UserPlus,
+  AlertCircle,
+  HelpCircle
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile } from './types';
 import { Logo } from './components/Logo';
@@ -52,6 +54,7 @@ const exportToExcel = (items: InventoryItem[], movements: MovementLog[]) => {
   ].join(';'));
 
   // MOVIMENTAÇÕES
+  // Not used in this specific export call but available for future
   const headerMov = ['Data/Hora;Tipo;Item;Quantidade;Motivo;Matricula;Colaborador'];
   const rowsMov = movements.map(m => [
     new Date(m.timestamp).toLocaleString('pt-BR'),
@@ -63,10 +66,6 @@ const exportToExcel = (items: InventoryItem[], movements: MovementLog[]) => {
     `"${m.userName}"`
   ].join(';'));
 
-  // Combine into one big CSV text (Simulating sheets by spacing, though CSV is single sheet)
-  // Or just export Inventory for this context as requested usually. 
-  // Let's export Inventory primarily, as that is the "Current State".
-  
   const csvContent = BOM + headerInv.join('') + '\n' + rowsInv.join('\n');
 
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -82,19 +81,20 @@ const exportToExcel = (items: InventoryItem[], movements: MovementLog[]) => {
 const MOCK_ITEMS: InventoryItem[] = [
   {
     id: '1',
-    name: 'Papel A4',
-    unit: 'Resma',
-    minStock: 10,
-    currentStock: 45,
-    location: 'A-12',
-    department: 'Escritório',
+    name: 'Exemplo de Material',
+    unit: 'Unid',
+    minStock: 5,
+    currentStock: 10,
+    location: 'A-01',
+    department: 'Geral',
     lastUpdated: new Date().toISOString(),
-    description: 'Papel alcalino de alta qualidade para impressoras.',
+    description: 'Item de exemplo.',
     lastUpdatedBy: 'Sistema'
   }
 ];
 
-const DEFAULT_DEPARTMENTS = ['Escritório', 'TI', 'Limpeza', 'Manutenção', 'Produção'];
+// Start with a minimal list so users can build their own
+const DEFAULT_DEPARTMENTS = ['Geral'];
 
 // --- Main Component ---
 export default function App() {
@@ -114,11 +114,13 @@ export default function App() {
   const [badgeInput, setBadgeInput] = useState('');
   const [nameInput, setNameInput] = useState(''); // For registration
   const [isRegistering, setIsRegistering] = useState(false);
+  const [showWelcomeToast, setShowWelcomeToast] = useState(false);
   
   // Inventory UI State
   const [viewMode, setViewMode] = useState<'GRID' | 'LIST'>('LIST'); 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showLowStockOnly, setShowLowStockOnly] = useState(false); // Filter for alert click
   
   // Modal States
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
@@ -126,6 +128,11 @@ export default function App() {
   const [isMovementModalOpen, setIsMovementModalOpen] = useState(false);
   const [movementType, setMovementType] = useState<'IN' | 'OUT'>('IN');
   const [movementItemId, setMovementItemId] = useState<string>('');
+  const [isImportHelpOpen, setIsImportHelpOpen] = useState(false);
+  
+  // Delete Confirmation State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [itemsToDelete, setItemsToDelete] = useState<string[]>([]);
   
   // Sidebar Mobile
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -183,22 +190,37 @@ export default function App() {
   }, [darkMode]);
 
   // -- Computed --
+  
+  const lowStockItems = useMemo(() => {
+    return items.filter(i => i.currentStock <= i.minStock);
+  }, [items]);
+
   const filteredItems = useMemo(() => {
-    if (!searchTerm) return items;
-    const lowerTerm = searchTerm.toLowerCase().trim();
-    
-    return items.filter(item => {
-      const name = item.name?.toLowerCase() || '';
-      const dept = item.department?.toLowerCase() || '';
-      const loc = item.location?.toLowerCase() || '';
-      const id = item.id?.toLowerCase() || '';
-      
-      return name.includes(lowerTerm) || 
-             dept.includes(lowerTerm) ||
-             loc.includes(lowerTerm) ||
-             id.includes(lowerTerm);
-    });
-  }, [items, searchTerm]);
+    let result = items;
+
+    // Filter by Search Term
+    if (searchTerm) {
+      const lowerTerm = searchTerm.toLowerCase().trim();
+      result = result.filter(item => {
+        const name = item.name?.toLowerCase() || '';
+        const dept = item.department?.toLowerCase() || '';
+        const loc = item.location?.toLowerCase() || '';
+        const id = item.id?.toLowerCase() || '';
+        
+        return name.includes(lowerTerm) || 
+               dept.includes(lowerTerm) ||
+               loc.includes(lowerTerm) ||
+               id.includes(lowerTerm);
+      });
+    }
+
+    // Filter by Low Stock Toggle (triggered by alert)
+    if (showLowStockOnly) {
+      result = result.filter(item => item.currentStock <= item.minStock);
+    }
+
+    return result;
+  }, [items, searchTerm, showLowStockOnly]);
 
   // -- Handlers --
 
@@ -212,7 +234,7 @@ export default function App() {
     const existingUser = registeredUsers.find(u => u.badgeId === badgeInput);
     if (existingUser) {
       // Login directly
-      setUser({
+      loginUser({
         badgeId: existingUser.badgeId,
         name: existingUser.name,
         role: existingUser.role
@@ -222,6 +244,12 @@ export default function App() {
       // Prompt for registration
       setIsRegistering(true);
     }
+  };
+
+  const loginUser = (session: UserSession) => {
+    setUser(session);
+    setShowWelcomeToast(true);
+    setTimeout(() => setShowWelcomeToast(false), 5000); // Hide after 5s
   };
 
   const handleRegisterAndLogin = (e: React.FormEvent) => {
@@ -236,7 +264,7 @@ export default function App() {
     };
 
     setRegisteredUsers(prev => [...prev, newUser]);
-    setUser({
+    loginUser({
       badgeId: newUser.badgeId,
       name: newUser.name,
       role: newUser.role
@@ -253,6 +281,7 @@ export default function App() {
     setBadgeInput('');
     setNameInput('');
     setIsRegistering(false);
+    setShowWelcomeToast(false);
     setCurrentView(AppView.DASHBOARD);
   };
 
@@ -304,17 +333,38 @@ export default function App() {
     closeItemModal();
   };
 
-  const handleDeleteItems = () => {
+  // --- DELETE LOGIC ---
+  const promptDeleteSingle = (id: string) => {
+    setItemsToDelete([id]);
+    setIsDeleteModalOpen(true);
+  };
+
+  const promptDeleteBulk = () => {
     if (selectedItems.size === 0) {
-      alert("Nenhum item selecionado para exclusão.");
+      alert("Nenhum item selecionado.");
       return;
     }
+    setItemsToDelete(Array.from(selectedItems));
+    setIsDeleteModalOpen(true);
+  };
+
+  const confirmDelete = () => {
+    setItems(prev => prev.filter(item => !itemsToDelete.includes(item.id)));
     
-    if (window.confirm(`Tem certeza que deseja excluir permanentemente ${selectedItems.size} item(s)?`)) {
-      setItems(prev => prev.filter(item => !selectedItems.has(item.id)));
-      setSelectedItems(new Set()); // Clear selection after delete
+    // Clear selection for deleted items
+    const newSelected = new Set(selectedItems);
+    itemsToDelete.forEach(id => newSelected.delete(id));
+    setSelectedItems(newSelected);
+    
+    setIsDeleteModalOpen(false);
+    setItemsToDelete([]);
+    
+    // If we deleted the item being edited, close the modal
+    if (editingItem && itemsToDelete.includes(editingItem.id)) {
+      closeItemModal();
     }
   };
+  // --------------------
 
   const handleStockMovement = (e: React.FormEvent) => {
     e.preventDefault();
@@ -439,16 +489,12 @@ export default function App() {
   // -- View Components --
 
   const DashboardView = () => {
-    const lowStockCount = items.filter(i => i.currentStock <= i.minStock).length;
     const totalItems = items.length;
 
     return (
       <div className="space-y-6 animate-fade-in">
-        <div className="bg-gradient-to-r from-brand-700 to-brand-500 rounded-xl p-6 text-white shadow-lg">
-           <h2 className="text-2xl font-bold mb-1">Olá, {user?.name.split(' ')[0]}!</h2>
-           <p className="opacity-90">Bem-vindo ao sistema de controle de estoque CARPA.</p>
-        </div>
-
+        {/* Welcome message moved to toast, but we keep a nice header here */}
+        
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
             <div className="flex justify-between items-start">
@@ -461,11 +507,14 @@ export default function App() {
               </div>
             </div>
           </div>
-          <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
+          <div 
+            className={`bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition ${lowStockItems.length > 0 ? 'ring-2 ring-red-500' : ''}`}
+            onClick={() => { setShowLowStockOnly(true); setCurrentView(AppView.INVENTORY); }}
+          >
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Estoque Crítico</p>
-                <h3 className="text-3xl font-bold text-red-600 mt-2">{lowStockCount}</h3>
+                <h3 className="text-3xl font-bold text-red-600 mt-2">{lowStockItems.length}</h3>
               </div>
               <div className="p-3 bg-red-100 dark:bg-red-900/30 rounded-lg">
                 <AlertTriangle className="w-6 h-6 text-red-600" />
@@ -571,7 +620,7 @@ export default function App() {
                     {departments.map(d => (
                         <div key={d} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-100 dark:border-slate-700">
                             <span className="font-medium text-slate-700 dark:text-slate-200">{d}</span>
-                            <button onClick={() => removeDept(d)} className="text-red-500 hover:text-red-700 p-1">
+                            <button onClick={() => removeDept(d)} className="text-red-500 hover:text-red-700 p-1" title="Remover departamento">
                                 <Trash2 className="w-4 h-4" />
                             </button>
                         </div>
@@ -629,9 +678,20 @@ export default function App() {
 
         {/* Actions */}
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+           {/* Low Stock Filter Reset */}
+           {showLowStockOnly && (
+              <button 
+                onClick={() => setShowLowStockOnly(false)}
+                className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-sm"
+              >
+                <X className="w-4 h-4" /> Ver Todos
+              </button>
+           )}
+
           {selectedItems.size > 0 && (
             <button 
-              onClick={handleDeleteItems}
+              type="button"
+              onClick={promptDeleteBulk}
               className="flex items-center justify-center gap-2 bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 px-3 py-2 rounded-lg font-medium transition text-sm shadow-sm"
             >
               <Trash2 className="w-4 h-4" /> Excluir ({selectedItems.size})
@@ -641,6 +701,7 @@ export default function App() {
           <div className="h-6 w-px bg-slate-300 dark:bg-slate-600 mx-2 hidden md:block"></div>
 
           <button 
+            type="button"
             onClick={() => setViewMode('LIST')}
             className={`p-2 rounded-lg transition ${viewMode === 'LIST' ? 'bg-brand-100 text-brand-600 dark:bg-brand-900/50 dark:text-brand-400' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
             title="Lista"
@@ -648,6 +709,7 @@ export default function App() {
             <ListIcon className="w-5 h-5" />
           </button>
           <button 
+            type="button"
             onClick={() => setViewMode('GRID')}
             className={`p-2 rounded-lg transition ${viewMode === 'GRID' ? 'bg-brand-100 text-brand-600 dark:bg-brand-900/50 dark:text-brand-400' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'}`}
             title="Grade"
@@ -657,11 +719,23 @@ export default function App() {
           
           <div className="h-6 w-px bg-slate-300 dark:bg-slate-600 mx-2 hidden md:block"></div>
 
-          <label className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer transition" title="Importar">
-            <Upload className="w-5 h-5" />
-            <input type="file" accept=".csv" className="hidden" onChange={importCSV} />
-          </label>
+          <div className="flex items-center gap-1">
+             <label className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer transition" title="Importar CSV">
+                <Upload className="w-5 h-5" />
+                <input type="file" accept=".csv" className="hidden" onChange={importCSV} />
+            </label>
+            <button
+                type="button"
+                onClick={() => setIsImportHelpOpen(true)}
+                className="p-1 text-slate-400 hover:text-brand-600 rounded-full hover:bg-brand-50 dark:hover:bg-brand-900/20 transition"
+                title="Ajuda Importação"
+            >
+                <HelpCircle className="w-4 h-4" />
+            </button>
+          </div>
+          
           <button 
+            type="button"
             onClick={() => exportToExcel(items, movements)}
             className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition"
             title="Exportar"
@@ -669,6 +743,7 @@ export default function App() {
             <Download className="w-5 h-5" />
           </button>
           <button 
+            type="button"
             onClick={() => { setEditingItem(null); setFormData({}); setIsItemModalOpen(true); }}
             className="flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded-lg font-medium transition text-sm ml-2 shadow-md hover:shadow-lg"
           >
@@ -684,6 +759,11 @@ export default function App() {
             <Package className="w-16 h-16 mx-auto text-slate-300 mb-4" />
             <h3 className="text-lg font-medium text-slate-900 dark:text-white">Nenhum item encontrado</h3>
             <p className="text-slate-500">Tente buscar por outro termo ou adicione um novo item.</p>
+            {showLowStockOnly && (
+               <button onClick={() => setShowLowStockOnly(false)} className="mt-4 text-brand-600 hover:underline">
+                  Ver todo o estoque
+               </button>
+            )}
           </div>
         ) : viewMode === 'LIST' ? (
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -734,9 +814,10 @@ export default function App() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-1">
-                        <button onClick={() => { setMovementItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-1.5 hover:bg-emerald-100 text-emerald-600 rounded" title="Entrada"><Plus className="w-4 h-4"/></button>
-                        <button onClick={() => { setMovementItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-1.5 hover:bg-orange-100 text-orange-600 rounded" title="Saída"><ArrowRightLeft className="w-4 h-4"/></button>
-                        <button onClick={() => { setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-1.5 hover:bg-slate-100 text-slate-600 rounded" title="Editar"><Edit className="w-4 h-4"/></button>
+                        <button type="button" onClick={() => { setMovementItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-1.5 hover:bg-emerald-100 text-emerald-600 rounded" title="Entrada"><Plus className="w-4 h-4"/></button>
+                        <button type="button" onClick={() => { setMovementItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-1.5 hover:bg-orange-100 text-orange-600 rounded" title="Saída"><ArrowRightLeft className="w-4 h-4"/></button>
+                        <button type="button" onClick={() => { setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-1.5 hover:bg-slate-100 text-slate-600 rounded" title="Editar"><Edit className="w-4 h-4"/></button>
+                        <button type="button" onClick={() => promptDeleteSingle(item.id)} className="p-1.5 hover:bg-red-100 text-red-600 rounded" title="Excluir"><Trash2 className="w-4 h-4"/></button>
                       </div>
                     </td>
                   </tr>
@@ -796,6 +877,7 @@ export default function App() {
                     </div>
                     <div className="flex gap-1">
                       <button 
+                        type="button"
                         onClick={() => {
                           setMovementItemId(item.id);
                           setMovementType('IN');
@@ -807,6 +889,7 @@ export default function App() {
                         <Plus className="w-4 h-4" />
                       </button>
                       <button 
+                        type="button"
                         onClick={() => {
                           setMovementItemId(item.id);
                           setMovementType('OUT');
@@ -818,6 +901,7 @@ export default function App() {
                         <ArrowRightLeft className="w-4 h-4" />
                       </button>
                       <button 
+                        type="button"
                         onClick={() => {
                           setEditingItem(item);
                           setFormData(item);
@@ -827,6 +911,14 @@ export default function App() {
                         className="p-2 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-lg dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 transition"
                       >
                         <Edit className="w-4 h-4" />
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => promptDeleteSingle(item.id)}
+                        title="Excluir"
+                        className="p-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
+                      >
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
@@ -931,6 +1023,19 @@ export default function App() {
   return (
     <div className={`flex h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-300 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       
+      {/* Welcome Toast */}
+      {showWelcomeToast && (
+         <div className="fixed top-6 right-6 z-[100] bg-white dark:bg-slate-800 border-l-4 border-brand-500 shadow-2xl rounded-lg p-4 animate-fade-in flex items-center gap-3 pr-8">
+             <div className="p-2 bg-brand-100 dark:bg-brand-900/30 rounded-full">
+                 <UserCheck className="w-5 h-5 text-brand-600 dark:text-brand-400" />
+             </div>
+             <div>
+                 <h4 className="font-bold text-slate-900 dark:text-white">Olá, {user.name.split(' ')[0]}!</h4>
+                 <p className="text-sm text-slate-500 dark:text-slate-400">Bem-vindo ao sistema CARPA.</p>
+             </div>
+         </div>
+      )}
+
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
         <div 
@@ -948,8 +1053,8 @@ export default function App() {
           <div className="p-6 border-b border-slate-100 dark:border-slate-700 flex items-center gap-3">
             <Logo className="w-10 h-10" />
             <div>
-              <h2 className="font-bold text-slate-900 dark:text-white leading-tight">CARPA</h2>
-              <span className="text-xs text-brand-600 dark:text-brand-400 font-medium">Estoque Pro</span>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Controle de Estoque</p>
+              <h2 className="font-extrabold text-2xl text-slate-900 dark:text-white leading-none tracking-tight">CARPA</h2>
             </div>
             <button 
               onClick={() => setIsSidebarOpen(false)} 
@@ -1032,7 +1137,7 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Header Mobile */}
         <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 p-4 lg:hidden flex items-center justify-between flex-shrink-0">
           <button onClick={() => setIsSidebarOpen(true)} className="text-slate-600 dark:text-slate-400">
@@ -1041,6 +1146,24 @@ export default function App() {
           <h1 className="font-bold text-slate-900 dark:text-white">CARPA</h1>
           <div className="w-6" />
         </header>
+
+        {/* Global Low Stock Alert */}
+        {lowStockItems.length > 0 && (
+          <div 
+             onClick={() => { setShowLowStockOnly(true); setCurrentView(AppView.INVENTORY); }}
+             className="bg-orange-500 text-white px-6 py-3 flex items-center justify-between cursor-pointer hover:bg-orange-600 transition shadow-md z-30"
+          >
+             <div className="flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 animate-pulse" />
+                <span className="font-medium text-sm md:text-base">
+                  Atenção: {lowStockItems.length} material(is) com estoque abaixo do mínimo.
+                </span>
+             </div>
+             <button className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-sm font-semibold transition">
+                Verificar
+             </button>
+          </div>
+        )}
 
         {/* Scrollable View Area */}
         <div className="flex-1 overflow-y-auto p-4 lg:p-8">
@@ -1100,6 +1223,51 @@ export default function App() {
       </main>
 
       {/* --- Modals --- */}
+
+      {/* Import Help Modal */}
+      {isImportHelpOpen && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+             <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg p-6">
+                <div className="flex justify-between items-center mb-4 border-b border-slate-100 dark:border-slate-700 pb-4">
+                    <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <HelpCircle className="w-5 h-5 text-brand-600" />
+                        Instruções de Importação
+                    </h3>
+                    <button onClick={() => setIsImportHelpOpen(false)} className="text-slate-400 hover:text-slate-600">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+                <div className="text-sm text-slate-600 dark:text-slate-300 space-y-4">
+                    <p>Para importar seus dados existentes, salve sua planilha como arquivo <strong>CSV (separado por ponto e vírgula)</strong>.</p>
+                    <p>A ordem das colunas deve ser exatamente:</p>
+                    <ol className="list-decimal list-inside space-y-1 bg-slate-50 dark:bg-slate-900 p-4 rounded-lg font-mono text-xs">
+                        <li>ID (Código único do item)</li>
+                        <li>Nome do Material</li>
+                        <li>Unidade (ex: Unid, Kg)</li>
+                        <li>Estoque Atual (Número)</li>
+                        <li>Estoque Mínimo (Número)</li>
+                        <li>Localização</li>
+                        <li>Departamento</li>
+                        <li>Descrição (Opcional)</li>
+                    </ol>
+                    <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-lg border border-yellow-100 dark:border-yellow-900/50">
+                        <p className="text-yellow-700 dark:text-yellow-400 font-semibold text-xs">Dica Importante:</p>
+                        <p className="text-xs mt-1 text-yellow-600 dark:text-yellow-500">
+                            A primeira linha da planilha é ignorada (cabeçalho). Certifique-se de que seus dados comecem na segunda linha.
+                        </p>
+                    </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                    <button 
+                        onClick={() => setIsImportHelpOpen(false)}
+                        className="px-4 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 transition"
+                    >
+                        Entendi
+                    </button>
+                </div>
+             </div>
+         </div>
+      )}
 
       {/* Add/Edit Item Modal */}
       {isItemModalOpen && (
@@ -1238,20 +1406,31 @@ export default function App() {
               </div>
             </form>
             
-            <div className="p-6 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex justify-end gap-3">
-              <button 
-                type="button" 
-                onClick={closeItemModal}
-                className="px-4 py-2 text-slate-700 dark:text-slate-300 font-medium hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition"
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={handleSaveItem}
-                className="px-6 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg shadow-lg shadow-brand-500/30 transition"
-              >
-                Salvar Item
-              </button>
+            <div className="p-6 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex justify-between gap-3">
+              {editingItem ? (
+                 <button 
+                   type="button"
+                   onClick={() => promptDeleteSingle(editingItem.id)}
+                   className="px-4 py-2 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 font-medium transition flex items-center gap-2"
+                 >
+                   <Trash2 className="w-4 h-4" /> Excluir Material
+                 </button>
+              ) : <div></div>}
+              <div className="flex gap-3">
+                  <button 
+                    type="button" 
+                    onClick={closeItemModal}
+                    className="px-4 py-2 text-slate-700 dark:text-slate-300 font-medium hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition"
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    onClick={handleSaveItem}
+                    className="px-6 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg shadow-lg shadow-brand-500/30 transition"
+                  >
+                    Salvar Item
+                  </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1319,6 +1498,38 @@ export default function App() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteModalOpen && (
+         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center">
+               <div className="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="w-8 h-8 text-red-600 dark:text-red-500" />
+               </div>
+               <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Excluir Material?</h3>
+               <p className="text-slate-500 dark:text-slate-400 mb-6">
+                 Você está prestes a excluir permanentemente <strong>{itemsToDelete.length}</strong> item(ns). Esta ação não pode ser desfeita.
+               </p>
+               
+               <div className="flex gap-3">
+                  <button 
+                    type="button"
+                    onClick={() => { setIsDeleteModalOpen(false); setItemsToDelete([]); }}
+                    className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg font-medium transition"
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={confirmDelete}
+                    className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold shadow-lg shadow-red-500/30 transition transform active:scale-95"
+                  >
+                    Sim, Excluir
+                  </button>
+               </div>
+            </div>
+         </div>
       )}
 
     </div>
