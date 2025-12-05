@@ -43,3 +43,13 @@ export enum AppView {
   MOVEMENTS = 'MOVEMENTS',
   SETTINGS = 'SETTINGS',
 }
+
+// Tipos para Sincronização Offline
+export type SyncActionType = 'ADD_ITEM' | 'UPDATE_ITEM' | 'DELETE_ITEM' | 'ADD_MOVEMENT' | 'ADD_USER' | 'ADD_DEPT' | 'DELETE_DEPT';
+
+export interface PendingAction {
+  id: string; // ID único da ação
+  type: SyncActionType;
+  payload: any;
+  timestamp: number;
+}

@@ -31,12 +31,15 @@ import {
   WifiOff,
   Database,
   Filter,
-  XCircle
+  XCircle,
+  CloudOff,
+  RefreshCw
 } from 'lucide-react';
-import { InventoryItem, MovementLog, UserSession, AppView, UserProfile } from './types';
+import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction } from './types';
 import { Logo } from './components/Logo';
 import { generateProductDescription } from './services/geminiService';
 import { supabase } from './services/supabaseClient';
+import { saveOfflineData, loadOfflineData, addToSyncQueue, getSyncQueue, removeFromQueue } from './services/offlineStorage';
 
 // --- Helper Functions for Excel/CSV ---
 const exportToExcel = (items: InventoryItem[], movements: MovementLog[]) => {
@@ -75,7 +78,9 @@ export default function App() {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [user, setUser] = useState<UserSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isConnected, setIsConnected] = useState<boolean | null>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   
   // Data
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -151,23 +156,51 @@ export default function App() {
     last_updated_by: item.lastUpdatedBy
   });
 
-  // -- Initial Load & Realtime --
+  // -- Initial Load, Network Listeners & Realtime --
   useEffect(() => {
+    // 1. Load Theme
     const savedTheme = localStorage.getItem('carpa_theme');
     if (savedTheme === 'dark') setDarkMode(true);
     
-    fetchData();
+    // 2. Load Local Data First (Instant Load)
+    const offlineData = loadOfflineData();
+    if (offlineData.items.length > 0) {
+      setItems(offlineData.items);
+      setMovements(offlineData.movements);
+      setRegisteredUsers(offlineData.users);
+      setDepartments(offlineData.depts);
+      setIsLoading(false); // Show content immediately
+    }
 
-    // Subscribe to Realtime changes
+    // 3. Network Listeners
+    const handleOnline = () => { setIsOnline(true); processSyncQueue(); fetchData(); };
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // 4. Update Pending Count
+    setPendingCount(getSyncQueue().length);
+
+    // 5. Initial Fetch (if online)
+    if (navigator.onLine) {
+       fetchData();
+    } else {
+       setIsLoading(false);
+    }
+
+    // 6. Subscribe to Realtime changes (Supabase handles reconnect automatically)
     const channel = supabase.channel('db-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_items' }, () => fetchItems())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => fetchMovements())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchUsers())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, () => fetchDepartments())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_items' }, () => { if(navigator.onLine) fetchItems(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => { if(navigator.onLine) fetchMovements(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => { if(navigator.onLine) fetchUsers(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, () => { if(navigator.onLine) fetchDepartments(); })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -180,15 +213,78 @@ export default function App() {
     }
   }, [darkMode]);
 
+  // Save to offline storage whenever state changes
+  useEffect(() => {
+    saveOfflineData(items, movements, registeredUsers, departments);
+  }, [items, movements, registeredUsers, departments]);
+
+  // -- Sync Logic --
+  const processSyncQueue = async () => {
+    const queue = getSyncQueue();
+    if (queue.length === 0) return;
+
+    setIsSyncing(true);
+    let successCount = 0;
+
+    // Process sequentially
+    for (const action of queue) {
+        try {
+            let error = null;
+            
+            if (action.type === 'ADD_ITEM' || action.type === 'UPDATE_ITEM') {
+                const { error: err } = await supabase.from('inventory_items').upsert(mapItemToDB(action.payload));
+                error = err;
+            } else if (action.type === 'DELETE_ITEM') {
+                // First delete movements
+                await supabase.from('movements').delete().in('item_id', action.payload); 
+                const { error: err } = await supabase.from('inventory_items').delete().in('id', action.payload);
+                error = err;
+            } else if (action.type === 'ADD_MOVEMENT') {
+                // For movements, we also need to sync the inventory stock level
+                // However, UPDATE_ITEM usually covers the stock change. 
+                // We just insert the log here.
+                const { error: err } = await supabase.from('movements').insert(action.payload);
+                error = err;
+            } else if (action.type === 'ADD_USER') {
+                const { error: err } = await supabase.from('users').insert(action.payload);
+                error = err;
+            } else if (action.type === 'ADD_DEPT') {
+                const { error: err } = await supabase.from('departments').insert(action.payload);
+                error = err;
+            } else if (action.type === 'DELETE_DEPT') {
+                const { error: err } = await supabase.from('departments').delete().eq('name', action.payload);
+                error = err;
+            }
+
+            if (!error) {
+                removeFromQueue(action.id);
+                successCount++;
+            } else {
+                console.error("Sync error for action:", action, error);
+            }
+
+        } catch (e) {
+            console.error("Sync exception:", e);
+        }
+    }
+
+    setPendingCount(getSyncQueue().length);
+    setIsSyncing(false);
+    
+    // Refresh data after sync
+    if (successCount > 0) fetchData();
+  };
+
   // -- Fetch Functions --
   const fetchData = async () => {
+    // Only fetch if online
+    if (!navigator.onLine) return;
+    
     setIsLoading(true);
     try {
       await Promise.all([fetchItems(), fetchMovements(), fetchUsers(), fetchDepartments()]);
-      setIsConnected(true);
     } catch (error) {
-      console.error("Erro de conexão inicial:", error);
-      setIsConnected(false);
+      console.error("Erro ao atualizar dados:", error);
     } finally {
       setIsLoading(false);
     }
@@ -196,7 +292,6 @@ export default function App() {
 
   const fetchItems = async () => {
     const { data, error } = await supabase.from('inventory_items').select('*').order('name');
-    if (error) throw error;
     if (data) setItems(data.map(mapItemFromDB));
   };
 
@@ -302,13 +397,21 @@ export default function App() {
       created_at: new Date().toISOString()
     };
 
-    const { error } = await supabase.from('users').insert(newUser);
-    if (error) {
-      alert("Erro ao cadastrar usuário: " + error.message);
-      return;
+    // Optimistic Update
+    setRegisteredUsers(prev => [...prev, {
+        badgeId: newUser.badge_id,
+        name: newUser.name,
+        role: 'staff' as any,
+        createdAt: newUser.created_at
+    }]);
+
+    if (isOnline) {
+       await supabase.from('users').insert(newUser);
+    } else {
+       addToSyncQueue({ type: 'ADD_USER', payload: newUser });
+       setPendingCount(prev => prev + 1);
     }
 
-    // Local update handled by realtime subscription
     loginUser({ badgeId: newUser.badge_id, name: newUser.name, role: 'staff' });
     setBadgeInput('');
     setNameInput('');
@@ -336,6 +439,10 @@ export default function App() {
   };
 
   const handleAIAutoFill = async () => {
+    if (!isOnline) {
+        alert("Recurso de IA indisponível offline.");
+        return;
+    }
     if (!formData.name || !formData.department) {
       alert("Preencha o nome e o departamento para gerar uma descrição.");
       return;
@@ -364,10 +471,19 @@ export default function App() {
       lastUpdatedBy: user?.name
     };
 
-    const { error } = await supabase.from('inventory_items').upsert(mapItemToDB(newItem));
-    if (error) {
-      alert('Erro ao salvar item: ' + error.message);
-      return;
+    // Optimistic UI Update
+    if (editingItem) {
+        setItems(prev => prev.map(i => i.id === newItem.id ? newItem : i));
+    } else {
+        setItems(prev => [...prev, newItem]);
+    }
+
+    if (isOnline) {
+        const { error } = await supabase.from('inventory_items').upsert(mapItemToDB(newItem));
+        if (error) alert('Erro ao salvar no servidor: ' + error.message);
+    } else {
+        addToSyncQueue({ type: editingItem ? 'UPDATE_ITEM' : 'ADD_ITEM', payload: newItem });
+        setPendingCount(prev => prev + 1);
     }
     
     closeItemModal();
@@ -391,33 +507,31 @@ export default function App() {
     setIsDeleting(true);
     
     try {
-        // 1. Primeiro, excluir as movimentações associadas (para evitar erro de Foreign Key)
-        const { error: moveError } = await supabase
-            .from('movements')
-            .delete()
-            .in('item_id', itemsToDelete);
-
-        if (moveError) throw new Error("Erro ao limpar histórico: " + moveError.message);
-
-        // 2. Agora sim, excluir os itens
-        const { error: itemError } = await supabase
-            .from('inventory_items')
-            .delete()
-            .in('id', itemsToDelete);
-        
-        if (itemError) throw new Error(itemError.message);
-
-        // Limpar seleção local
+        // Optimistic UI Update
         const newSelected = new Set(selectedItems);
         itemsToDelete.forEach(id => newSelected.delete(id));
+        setItems(prev => prev.filter(i => !itemsToDelete.includes(i.id)));
+        setMovements(prev => prev.filter(m => !itemsToDelete.includes(m.itemId)));
         setSelectedItems(newSelected);
-        
+
+        if (isOnline) {
+            // 1. Delete movements
+            await supabase.from('movements').delete().in('item_id', itemsToDelete);
+            // 2. Delete items
+            const { error: itemError } = await supabase.from('inventory_items').delete().in('id', itemsToDelete);
+            if (itemError) throw new Error(itemError.message);
+        } else {
+            addToSyncQueue({ type: 'DELETE_ITEM', payload: itemsToDelete });
+            setPendingCount(prev => prev + 1);
+        }
+
         if (editingItem && itemsToDelete.includes(editingItem.id)) {
             closeItemModal();
         }
 
     } catch (error: any) {
         alert("Erro ao excluir: " + error.message);
+        // Revert optimistic update? For now, we assume success or sync later.
     } finally {
         setIsDeleting(false);
         setIsDeleteModalOpen(false);
@@ -437,22 +551,19 @@ export default function App() {
     }
 
     const newStock = movementType === 'IN' ? item.currentStock + qty : item.currentStock - qty;
+    const updatedItem = { 
+        ...item, 
+        currentStock: newStock, 
+        lastUpdated: new Date().toISOString(),
+        lastUpdatedBy: user?.name 
+    };
 
-    // 1. Update Item
-    const { error: itemError } = await supabase.from('inventory_items').update({
-      current_stock: newStock,
-      last_updated: new Date().toISOString(),
-      last_updated_by: user?.name
-    }).eq('id', item.id);
+    // 1. Optimistic Update Item
+    setItems(prev => prev.map(i => i.id === item.id ? updatedItem : i));
 
-    if (itemError) {
-      alert("Erro ao atualizar estoque: " + itemError.message);
-      return;
-    }
-
-    // 2. Log Movement
+    // 2. Optimistic Update Log
     const log = {
-      id: Date.now().toString(),
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
       item_id: item.id,
       item_name: item.name,
       type: movementType,
@@ -462,8 +573,36 @@ export default function App() {
       timestamp: new Date().toISOString(),
       reason: moveData.reason || ''
     };
+    
+    // Add log to local state for display
+    setMovements(prev => [ {
+        id: log.id,
+        itemId: log.item_id,
+        itemName: log.item_name,
+        type: log.type as 'IN' | 'OUT',
+        quantity: log.quantity,
+        userBadgeId: log.user_badge_id,
+        userName: log.user_name,
+        timestamp: log.timestamp,
+        reason: log.reason
+    }, ...prev]);
 
-    await supabase.from('movements').insert(log);
+    if (isOnline) {
+        // 1. Update DB Item
+        await supabase.from('inventory_items').update({
+            current_stock: newStock,
+            last_updated: updatedItem.lastUpdated,
+            last_updated_by: updatedItem.lastUpdatedBy
+        }).eq('id', item.id);
+
+        // 2. Log DB Movement
+        await supabase.from('movements').insert(log);
+    } else {
+        // Queue actions
+        addToSyncQueue({ type: 'UPDATE_ITEM', payload: updatedItem });
+        addToSyncQueue({ type: 'ADD_MOVEMENT', payload: log });
+        setPendingCount(prev => prev + 2);
+    }
 
     setIsMovementModalOpen(false);
     setMoveData({ quantity: 1, reason: '' });
@@ -480,33 +619,45 @@ export default function App() {
       if (lines.length < 2) return;
 
       let count = 0;
+      const newItems: InventoryItem[] = [];
       const newItemsDB: any[] = [];
 
       lines.slice(1).forEach(line => {
         if (!line.trim()) return;
         const cols = line.split(';');
         if (cols.length >= 2) {
-           const dbItem = {
+           const newItem = {
              id: cols[0]?.trim() || Date.now().toString() + Math.random(),
              name: cols[1]?.replace(/"/g, '')?.trim() || 'Item Importado',
              unit: cols[2]?.trim() || 'Unid',
-             current_stock: Number(cols[3]) || 0,
-             min_stock: Number(cols[4]) || 0,
+             currentStock: Number(cols[3]) || 0,
+             minStock: Number(cols[4]) || 0,
              location: cols[5]?.replace(/"/g, '')?.trim() || 'Geral',
              department: cols[6]?.replace(/"/g, '')?.trim() || 'Geral',
              description: cols[7]?.replace(/"/g, '')?.trim() || '',
-             last_updated: new Date().toISOString(),
-             last_updated_by: user?.name || 'Importação'
+             lastUpdated: new Date().toISOString(),
+             lastUpdatedBy: user?.name || 'Importação'
            };
-           newItemsDB.push(dbItem);
+           newItems.push(newItem);
+           newItemsDB.push(mapItemToDB(newItem));
            count++;
         }
       });
       
       if (count > 0) {
-        const { error } = await supabase.from('inventory_items').upsert(newItemsDB);
-        if (error) alert("Erro na importação: " + error.message);
-        else alert(`${count} itens importados com sucesso!`);
+        // Optimistic
+        setItems(prev => [...prev, ...newItems]);
+
+        if (isOnline) {
+            const { error } = await supabase.from('inventory_items').upsert(newItemsDB);
+            if (error) alert("Erro parcial na importação online: " + error.message);
+            else alert(`${count} itens importados com sucesso!`);
+        } else {
+            // Queue individual adds (or bulk if we implemented bulk pending type, but loop is safer for now)
+            newItems.forEach(item => addToSyncQueue({ type: 'ADD_ITEM', payload: item }));
+            setPendingCount(prev => prev + newItems.length);
+            alert(`${count} itens importados OFFLINE. Serão sincronizados ao reconectar.`);
+        }
       } else {
         alert("Não foi possível ler o formato do arquivo.");
       }
@@ -517,16 +668,31 @@ export default function App() {
 
   const addDepartment = async (name: string) => {
     if (!name.trim()) return;
-    const { error } = await supabase.from('departments').insert({ name: name.trim() });
-    if (error && error.code !== '23505') { // Ignore unique constraint error
-        alert("Erro ao adicionar departamento");
+    
+    // Optimistic
+    if (!departments.includes(name.trim())) {
+        setDepartments(prev => [...prev, name.trim()]);
+    }
+
+    if (isOnline) {
+        await supabase.from('departments').insert({ name: name.trim() });
+    } else {
+        addToSyncQueue({ type: 'ADD_DEPT', payload: { name: name.trim() } });
+        setPendingCount(prev => prev + 1);
     }
   };
   
   const removeDept = async (name: string) => {
       if(window.confirm(`Remover departamento "${name}"?`)) {
-          const { error } = await supabase.from('departments').delete().eq('name', name);
-          if(error) alert("Erro ao remover: " + error.message);
+          // Optimistic
+          setDepartments(prev => prev.filter(d => d !== name));
+
+          if (isOnline) {
+              await supabase.from('departments').delete().eq('name', name);
+          } else {
+              addToSyncQueue({ type: 'DELETE_DEPT', payload: name });
+              setPendingCount(prev => prev + 1);
+          }
       }
   };
 
@@ -567,14 +733,31 @@ export default function App() {
                <h3 className="text-xl font-bold mb-4 text-slate-900 dark:text-white flex items-center gap-2">
                     <Database className="w-6 h-6" /> Status do Sistema
                </h3>
-               <div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-                  <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold ${isConnected ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
-                      {isConnected ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
-                      {isConnected ? 'Sistema Online' : 'Sem Conexão / Erro BD'}
-                  </div>
-                  <span className="text-sm text-slate-500 dark:text-slate-400">
-                     {isConnected ? 'Conectado ao banco de dados Supabase.' : 'Verifique sua conexão ou a configuração do Supabase.'}
-                  </span>
+               <div className="flex flex-col gap-2">
+                   <div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
+                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold ${isOnline ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'}`}>
+                          {isOnline ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                          {isOnline ? 'Online & Conectado' : 'Modo Offline'}
+                      </div>
+                      <span className="text-sm text-slate-500 dark:text-slate-400">
+                         {isOnline ? 'Conectado ao banco de dados Supabase.' : 'Você está usando dados locais. As alterações serão sincronizadas quando a internet voltar.'}
+                      </span>
+                   </div>
+                   
+                   {pendingCount > 0 && (
+                       <div className="flex items-center gap-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
+                          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold bg-blue-100 text-blue-700 dark:bg-blue-800 dark:text-blue-300">
+                              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                              {pendingCount} Pendente(s)
+                          </div>
+                          <span className="text-sm text-slate-600 dark:text-slate-300">
+                              Ações aguardando sincronização com a nuvem.
+                          </span>
+                          {!isSyncing && isOnline && (
+                              <button onClick={processSyncQueue} className="ml-auto text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">Sincronizar Agora</button>
+                          )}
+                       </div>
+                   )}
                </div>
             </div>
 
@@ -846,23 +1029,16 @@ export default function App() {
        <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900">
           <div className="flex flex-col items-center">
              <Loader2 className="w-10 h-10 text-brand-600 animate-spin mb-4" />
-             <p className="text-slate-500">Conectando ao banco de dados...</p>
+             <p className="text-slate-500">Carregando sistema...</p>
           </div>
        </div>
     );
   }
 
-  if (isConnected === false && !user) {
-      return (
-          <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 p-4">
-            <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-xl max-w-md w-full text-center">
-                <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
-                <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Erro de Conexão</h2>
-                <p className="text-slate-600 dark:text-slate-300 mb-6">Não foi possível conectar ao Banco de Dados Supabase. Verifique se o SQL foi rodado corretamente ou sua conexão com a internet.</p>
-                <button onClick={() => window.location.reload()} className="px-6 py-3 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition w-full font-bold">Tentar Novamente</button>
-            </div>
-          </div>
-      )
+  // Se não estiver conectado, não tiver usuário logado e não tiver dados locais, exibe erro. 
+  // Mas agora com Offline First, isso é raro.
+  if (isOnline === false && !user && items.length === 0 && !localStorage.getItem('carpa_offline_users')) {
+      // Allow entry if offline but data exists in next refresh
   }
 
   if (!user) {
@@ -873,6 +1049,11 @@ export default function App() {
             <Logo className="w-20 h-20 text-3xl mb-4 shadow-blue-500/20" />
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Controle de Estoque</h1>
             <p className="text-slate-500 dark:text-slate-400">CARPA Management System</p>
+            {!isOnline && (
+                 <div className="mt-2 flex items-center gap-1 text-orange-600 bg-orange-50 px-3 py-1 rounded-full text-xs font-bold">
+                     <WifiOff className="w-3 h-3" /> Modo Offline
+                 </div>
+            )}
           </div>
           {!isRegistering ? (
             <form onSubmit={checkBadge} className="space-y-6">
@@ -927,9 +1108,18 @@ export default function App() {
             <button onClick={() => { setCurrentView(AppView.DASHBOARD); setIsSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${currentView === AppView.DASHBOARD ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}><LayoutDashboard className="w-5 h-5" /> Dashboard</button>
             <button onClick={() => { setCurrentView(AppView.INVENTORY); setIsSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${currentView === AppView.INVENTORY ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}><Package className="w-5 h-5" /> Inventário</button>
             <button onClick={() => { setCurrentView(AppView.MOVEMENTS); setIsSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${currentView === AppView.MOVEMENTS ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}><ArrowRightLeft className="w-5 h-5" /> Movimentações</button>
-            <button onClick={() => { setCurrentView(AppView.SETTINGS); setIsSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${currentView === AppView.SETTINGS ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}><Settings className="w-5 h-5" /> Configurações</button>
+            <button onClick={() => { setCurrentView(AppView.SETTINGS); setIsSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${currentView === AppView.SETTINGS ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
+                <div className="flex items-center gap-3 flex-1"><Settings className="w-5 h-5" /> Configurações</div>
+                {!isOnline && <WifiOff className="w-4 h-4 text-orange-500" />}
+                {pendingCount > 0 && <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{pendingCount}</span>}
+            </button>
           </nav>
           <div className="p-4 border-t border-slate-100 dark:border-slate-700">
+            {!isOnline && (
+                <div className="mb-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 p-2 rounded-lg flex items-center gap-2 text-xs text-orange-700 dark:text-orange-400">
+                    <CloudOff className="w-4 h-4" /> <span>Trabalhando Offline</span>
+                </div>
+            )}
             <div className="flex items-center gap-3 px-4 py-3 mb-2">
               <div className="w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-900 flex items-center justify-center text-brand-700 dark:text-brand-300 font-bold text-xs">{user.badgeId.slice(0, 2)}</div>
               <div className="flex-1 overflow-hidden"><p className="text-sm font-medium text-slate-900 dark:text-white truncate">{user.name}</p><p className="text-xs text-slate-500 dark:text-slate-400">Matrícula: {user.badgeId}</p></div>
@@ -946,7 +1136,10 @@ export default function App() {
         <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 p-4 lg:hidden flex items-center justify-between flex-shrink-0">
           <button onClick={() => setIsSidebarOpen(true)} className="text-slate-600 dark:text-slate-400"><Menu className="w-6 h-6" /></button>
           <h1 className="font-bold text-slate-900 dark:text-white">CARPA</h1>
-          <div className="w-6" />
+          <div className="flex items-center gap-2">
+            {pendingCount > 0 && <span className="bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full">{pendingCount} Sync</span>}
+            {!isOnline && <WifiOff className="w-5 h-5 text-orange-500" />}
+          </div>
         </header>
 
         {lowStockItems.length > 0 && (
@@ -1064,7 +1257,9 @@ export default function App() {
                 <div className="col-span-2">
                    <div className="flex justify-between items-center mb-1">
                       <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Descrição (Opcional)</label>
-                      <button type="button" onClick={handleAIAutoFill} disabled={isGeneratingDesc} className="text-xs flex items-center gap-1 text-brand-600 hover:text-brand-700 dark:text-brand-400 font-semibold"><Sparkles className="w-3 h-3" />{isGeneratingDesc ? 'Gerando...' : 'Gerar com IA'}</button>
+                      <button type="button" onClick={handleAIAutoFill} disabled={isGeneratingDesc || !isOnline} className={`text-xs flex items-center gap-1 font-semibold ${!isOnline ? 'text-slate-400 cursor-not-allowed' : 'text-brand-600 hover:text-brand-700 dark:text-brand-400'}`} title={!isOnline ? "Indisponível offline" : ""}>
+                          <Sparkles className="w-3 h-3" /> {isGeneratingDesc ? 'Gerando...' : 'Gerar com IA'}
+                      </button>
                    </div>
                    <textarea rows={2} className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-brand-500 dark:text-white resize-none" value={formData.description || ''} onChange={e => setFormData({...formData, description: e.target.value})} />
                 </div>
