@@ -34,7 +34,9 @@ import {
   XCircle,
   CloudOff,
   RefreshCw,
-  Smartphone
+  Smartphone,
+  Share,
+  Info
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction } from './types';
 import { Logo } from './components/Logo';
@@ -85,6 +87,7 @@ export default function App() {
   
   // Install Prompt State
   const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [isIOS, setIsIOS] = useState(false);
   
   // Data
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -162,6 +165,10 @@ export default function App() {
 
   // -- Initial Load, Network Listeners & Realtime --
   useEffect(() => {
+    // 0. Detect iOS
+    const isIosDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    setIsIOS(isIosDevice);
+
     // 0. Install Prompt Listener
     const handleBeforeInstallPrompt = (e: any) => {
       e.preventDefault();
@@ -782,16 +789,30 @@ export default function App() {
                        </div>
                    )}
 
-                   {installPrompt && (
+                   {/* Install Prompt Section */}
+                   {installPrompt ? (
                        <div className="flex items-center justify-between gap-4 p-4 bg-brand-50 dark:bg-brand-900/20 rounded-lg border border-brand-100 dark:border-brand-800 mt-2">
                           <div className="flex items-center gap-3">
-                              <div className="p-2 bg-brand-100 dark:bg-brand-800 rounded-full"><Smartphone className="w-5 h-5 text-brand-600 dark:text-brand-300"/></div>
+                              <div className="p-2 bg-brand-100 dark:bg-brand-800 rounded-full"><Download className="w-5 h-5 text-brand-600 dark:text-brand-300"/></div>
                               <div>
-                                  <h4 className="font-bold text-slate-900 dark:text-white text-sm">Instalar Aplicativo</h4>
-                                  <p className="text-xs text-slate-500 dark:text-slate-400">Instale o CARPA no seu dispositivo para acesso rápido.</p>
+                                  <h4 className="font-bold text-slate-900 dark:text-white text-sm">Baixar Aplicativo</h4>
+                                  <p className="text-xs text-slate-500 dark:text-slate-400">Instale o CARPA no seu dispositivo Android ou PC.</p>
                               </div>
                           </div>
-                          <button onClick={handleInstallApp} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg text-sm shadow-md transition">Instalar Agora</button>
+                          <button onClick={handleInstallApp} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg text-sm shadow-md transition flex items-center gap-2"><Download className="w-4 h-4" /> Baixar</button>
+                       </div>
+                   ) : isIOS ? (
+                       <div className="flex items-start gap-4 p-4 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 mt-2">
+                           <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-full"><Share className="w-5 h-5 text-slate-600 dark:text-slate-300"/></div>
+                           <div>
+                               <h4 className="font-bold text-slate-900 dark:text-white text-sm">Como instalar no iPhone/iPad:</h4>
+                               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">1. Toque no botão <strong>Compartilhar</strong> <Share className="w-3 h-3 inline" /> no navegador.</p>
+                               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">2. Role para baixo e selecione <strong>"Adicionar à Tela de Início"</strong>.</p>
+                           </div>
+                       </div>
+                   ) : (
+                       <div className="flex items-center gap-2 p-4 mt-2 text-xs text-slate-400 bg-slate-50 dark:bg-slate-900 rounded-lg border border-dashed border-slate-200 dark:border-slate-700">
+                           <Info className="w-4 h-4" /> Aplicativo já instalado ou não suportado neste navegador.
                        </div>
                    )}
                </div>
@@ -1082,7 +1103,7 @@ export default function App() {
       <div className={`min-h-screen w-full flex items-center justify-center bg-slate-50 dark:bg-slate-900 transition-colors duration-300 ${darkMode ? 'dark' : ''}`}>
         <div className="w-full max-w-md p-8 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-700">
           <div className="flex flex-col items-center mb-8">
-            <Logo className="w-20 h-20 text-3xl mb-4 shadow-blue-500/20" />
+            <Logo className="w-24 h-24 mb-6 shadow-blue-500/20" />
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Controle de Estoque</h1>
             <p className="text-slate-500 dark:text-slate-400">CARPA Management System</p>
             {!isOnline && (
@@ -1136,7 +1157,7 @@ export default function App() {
       <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 transform transition-transform duration-200 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="h-full flex flex-col">
           <div className="p-6 border-b border-slate-100 dark:border-slate-700 flex items-center gap-3">
-            <Logo className="w-10 h-10" />
+            <Logo className="w-12 h-12" />
             <div><p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Controle de Estoque</p><h2 className="font-extrabold text-2xl text-slate-900 dark:text-white leading-none tracking-tight">CARPA</h2></div>
             <button onClick={() => setIsSidebarOpen(false)} className="ml-auto lg:hidden text-slate-500"><X className="w-6 h-6" /></button>
           </div>
@@ -1153,7 +1174,7 @@ export default function App() {
             {/* Install Button for PWA */}
             {installPrompt && (
               <button onClick={handleInstallApp} className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-lg text-sm font-bold bg-brand-600 text-white hover:bg-brand-700 shadow-md transition animate-fade-in mt-4">
-                  <Smartphone className="w-5 h-5" /> Instalar App
+                  <Download className="w-5 h-5" /> Baixar Aplicativo
               </button>
             )}
           </nav>
@@ -1180,6 +1201,11 @@ export default function App() {
           <button onClick={() => setIsSidebarOpen(true)} className="text-slate-600 dark:text-slate-400"><Menu className="w-6 h-6" /></button>
           <h1 className="font-bold text-slate-900 dark:text-white">CARPA</h1>
           <div className="flex items-center gap-2">
+            {installPrompt && (
+                <button onClick={handleInstallApp} className="p-2 bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-300 rounded-full">
+                    <Download className="w-5 h-5" />
+                </button>
+            )}
             {pendingCount > 0 && <span className="bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full">{pendingCount} Sync</span>}
             {!isOnline && <WifiOff className="w-5 h-5 text-orange-500" />}
           </div>
