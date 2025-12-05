@@ -1,0 +1,20 @@
+{
+  "name": "Controle de Estoque CARPA",
+  "short_name": "CARPA Estoque",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://placehold.co/192x192/2563eb/ffffff?text=CARPA",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://placehold.co/512x512/2563eb/ffffff?text=CARPA",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
