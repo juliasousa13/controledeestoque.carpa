@@ -33,7 +33,8 @@ import {
   Filter,
   XCircle,
   CloudOff,
-  RefreshCw
+  RefreshCw,
+  Smartphone
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction } from './types';
 import { Logo } from './components/Logo';
@@ -81,6 +82,9 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  
+  // Install Prompt State
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
   
   // Data
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -158,6 +162,13 @@ export default function App() {
 
   // -- Initial Load, Network Listeners & Realtime --
   useEffect(() => {
+    // 0. Install Prompt Listener
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
     // 1. Load Theme
     const savedTheme = localStorage.getItem('carpa_theme');
     if (savedTheme === 'dark') setDarkMode(true);
@@ -201,6 +212,7 @@ export default function App() {
       supabase.removeChannel(channel);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
   }, []);
 
@@ -384,6 +396,17 @@ export default function App() {
     setUser(session);
     setShowWelcomeToast(true);
     setTimeout(() => setShowWelcomeToast(false), 5000);
+  };
+
+  const handleInstallApp = () => {
+    if (installPrompt) {
+      installPrompt.prompt();
+      installPrompt.userChoice.then((choiceResult: any) => {
+        if (choiceResult.outcome === 'accepted') {
+          setInstallPrompt(null);
+        }
+      });
+    }
   };
 
   const handleRegisterAndLogin = async (e: React.FormEvent) => {
@@ -758,6 +781,19 @@ export default function App() {
                           )}
                        </div>
                    )}
+
+                   {installPrompt && (
+                       <div className="flex items-center justify-between gap-4 p-4 bg-brand-50 dark:bg-brand-900/20 rounded-lg border border-brand-100 dark:border-brand-800 mt-2">
+                          <div className="flex items-center gap-3">
+                              <div className="p-2 bg-brand-100 dark:bg-brand-800 rounded-full"><Smartphone className="w-5 h-5 text-brand-600 dark:text-brand-300"/></div>
+                              <div>
+                                  <h4 className="font-bold text-slate-900 dark:text-white text-sm">Instalar Aplicativo</h4>
+                                  <p className="text-xs text-slate-500 dark:text-slate-400">Instale o CARPA no seu dispositivo para acesso rápido.</p>
+                              </div>
+                          </div>
+                          <button onClick={handleInstallApp} className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg text-sm shadow-md transition">Instalar Agora</button>
+                       </div>
+                   )}
                </div>
             </div>
 
@@ -1113,6 +1149,13 @@ export default function App() {
                 {!isOnline && <WifiOff className="w-4 h-4 text-orange-500" />}
                 {pendingCount > 0 && <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{pendingCount}</span>}
             </button>
+            
+            {/* Install Button for PWA */}
+            {installPrompt && (
+              <button onClick={handleInstallApp} className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-lg text-sm font-bold bg-brand-600 text-white hover:bg-brand-700 shadow-md transition animate-fade-in mt-4">
+                  <Smartphone className="w-5 h-5" /> Instalar App
+              </button>
+            )}
           </nav>
           <div className="p-4 border-t border-slate-100 dark:border-slate-700">
             {!isOnline && (

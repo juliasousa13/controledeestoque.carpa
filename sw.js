@@ -1,11 +1,13 @@
 
-const CACHE_NAME = 'carpa-inventory-v1';
+const CACHE_NAME = 'carpa-inventory-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/index.tsx',
   '/manifest.json',
-  'https://cdn.tailwindcss.com'
+  'https://cdn.tailwindcss.com',
+  'https://placehold.co/192x192/2563eb/ffffff?text=CARPA',
+  'https://placehold.co/512x512/2563eb/ffffff?text=CARPA'
 ];
 
 // Instalação do Service Worker e cache dos recursos
