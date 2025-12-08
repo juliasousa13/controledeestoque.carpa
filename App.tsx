@@ -36,13 +36,15 @@ import {
   RefreshCw,
   Smartphone,
   Share,
-  Info
+  Info,
+  Users
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction } from './types';
 import { Logo } from './components/Logo';
 import { generateProductDescription } from './services/geminiService';
 import { supabase } from './services/supabaseClient';
 import { saveOfflineData, loadOfflineData, addToSyncQueue, getSyncQueue, removeFromQueue } from './services/offlineStorage';
+import { RealtimeChannel } from '@supabase/supabase-js';
 
 // --- Helper Functions for Excel/CSV ---
 const exportToExcel = (items: InventoryItem[], movements: MovementLog[]) => {
@@ -84,6 +86,9 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [onlineUsersCount, setOnlineUsersCount] = useState(0);
+  const [presenceChannel, setPresenceChannel] = useState<RealtimeChannel | null>(null);
+  const MAX_USERS = 10;
   
   // Install Prompt State
   const [installPrompt, setInstallPrompt] = useState<any>(null);
@@ -208,20 +213,48 @@ export default function App() {
     }
 
     // 6. Subscribe to Realtime changes (Supabase handles reconnect automatically)
-    const channel = supabase.channel('db-changes')
+    const dbChannel = supabase.channel('db-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_items' }, () => { if(navigator.onLine) fetchItems(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => { if(navigator.onLine) fetchMovements(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => { if(navigator.onLine) fetchUsers(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, () => { if(navigator.onLine) fetchDepartments(); })
       .subscribe();
 
+    // 7. Presence Channel (Global User Count)
+    const presenceRoom = supabase.channel('global_presence');
+    presenceRoom
+      .on('presence', { event: 'sync' }, () => {
+         const state = presenceRoom.presenceState();
+         // Count unique presence keys (users)
+         setOnlineUsersCount(Object.keys(state).length);
+      })
+      .subscribe();
+    
+    setPresenceChannel(presenceRoom);
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(dbChannel);
+      supabase.removeChannel(presenceRoom);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
   }, []);
+
+  // -- Track Presence when User Logs In --
+  useEffect(() => {
+    if (presenceChannel && isOnline) {
+      if (user) {
+        presenceChannel.track({
+          user_id: user.badgeId,
+          name: user.name,
+          online_at: new Date().toISOString()
+        });
+      } else {
+        presenceChannel.untrack();
+      }
+    }
+  }, [user, presenceChannel, isOnline]);
 
   useEffect(() => {
     localStorage.setItem('carpa_theme', darkMode ? 'dark' : 'light');
@@ -390,6 +423,13 @@ export default function App() {
       alert("Matrícula muito curta.");
       return;
     }
+
+    // Check Max Users
+    if (onlineUsersCount >= MAX_USERS) {
+        alert(`O sistema atingiu o limite de ${MAX_USERS} usuários simultâneos. Tente novamente mais tarde.`);
+        return;
+    }
+
     const existingUser = registeredUsers.find(u => u.badgeId === badgeInput);
     if (existingUser) {
       loginUser({ badgeId: existingUser.badgeId, name: existingUser.name, role: existingUser.role });
@@ -415,10 +455,35 @@ export default function App() {
       });
     }
   };
+  
+  const handleShareApp = async () => {
+      const shareData = {
+          title: 'CARPA Estoque',
+          text: 'Acesse o sistema de controle de estoque CARPA:',
+          url: window.location.href
+      };
+      
+      try {
+          if (navigator.share) {
+              await navigator.share(shareData);
+          } else {
+              await navigator.clipboard.writeText(window.location.href);
+              alert("Link copiado para a área de transferência!");
+          }
+      } catch (err) {
+          console.error('Error sharing:', err);
+      }
+  };
 
   const handleRegisterAndLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nameInput.trim()) return;
+
+    // Check Max Users again before register
+    if (onlineUsersCount >= MAX_USERS) {
+        alert(`O sistema atingiu o limite de ${MAX_USERS} usuários simultâneos. Tente novamente mais tarde.`);
+        return;
+    }
 
     const newUser = {
       badge_id: badgeInput,
@@ -773,6 +838,16 @@ export default function App() {
                          {isOnline ? 'Conectado ao banco de dados Supabase.' : 'Você está usando dados locais. As alterações serão sincronizadas quando a internet voltar.'}
                       </span>
                    </div>
+
+                   <div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg mt-2">
+                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold ${onlineUsersCount < MAX_USERS ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
+                          <Users className="w-4 h-4" />
+                          {onlineUsersCount} / {MAX_USERS} Online
+                      </div>
+                      <span className="text-sm text-slate-500 dark:text-slate-400">
+                         Usuários conectados simultaneamente. Limite de {MAX_USERS}.
+                      </span>
+                   </div>
                    
                    {pendingCount > 0 && (
                        <div className="flex items-center gap-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
@@ -1111,6 +1186,11 @@ export default function App() {
                      <WifiOff className="w-3 h-3" /> Modo Offline
                  </div>
             )}
+            {isOnline && (
+                 <div className={`mt-2 flex items-center gap-1 ${onlineUsersCount >= MAX_USERS ? 'text-red-600 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-3 py-1 rounded-full text-xs font-bold`}>
+                     <Users className="w-3 h-3" /> {onlineUsersCount} / {MAX_USERS} Online
+                 </div>
+            )}
           </div>
           {!isRegistering ? (
             <form onSubmit={checkBadge} className="space-y-6">
@@ -1121,7 +1201,9 @@ export default function App() {
                   <input type="text" value={badgeInput} onChange={(e) => setBadgeInput(e.target.value)} placeholder="Digite sua matrícula..." className="w-full pl-10 pr-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-brand-500 dark:text-white transition" autoFocus />
                 </div>
               </div>
-              <button type="submit" className="w-full bg-brand-600 hover:bg-brand-700 text-white font-bold py-3 rounded-lg shadow-lg shadow-brand-500/30 transition transform hover:scale-[1.02] active:scale-[0.98]">Acessar Sistema</button>
+              <button type="submit" disabled={onlineUsersCount >= MAX_USERS} className={`w-full text-white font-bold py-3 rounded-lg shadow-lg transition transform ${onlineUsersCount >= MAX_USERS ? 'bg-slate-400 cursor-not-allowed' : 'bg-brand-600 hover:bg-brand-700 hover:scale-[1.02] active:scale-[0.98] shadow-brand-500/30'}`}>
+                  {onlineUsersCount >= MAX_USERS ? 'Sistema Lotado' : 'Acessar Sistema'}
+              </button>
             </form>
           ) : (
             <form onSubmit={handleRegisterAndLogin} className="space-y-6 animate-fade-in">
@@ -1171,6 +1253,10 @@ export default function App() {
                 {pendingCount > 0 && <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{pendingCount}</span>}
             </button>
             
+            <button onClick={handleShareApp} className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition">
+                <Share className="w-5 h-5" /> Compartilhar Acesso
+            </button>
+            
             {/* Install Button for PWA */}
             {installPrompt && (
               <button onClick={handleInstallApp} className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-lg text-sm font-bold bg-brand-600 text-white hover:bg-brand-700 shadow-md transition animate-fade-in mt-4">
@@ -1184,6 +1270,10 @@ export default function App() {
                     <CloudOff className="w-4 h-4" /> <span>Trabalhando Offline</span>
                 </div>
             )}
+            <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-emerald-600 dark:text-emerald-400 px-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                {onlineUsersCount} / {MAX_USERS} Online
+            </div>
             <div className="flex items-center gap-3 px-4 py-3 mb-2">
               <div className="w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-900 flex items-center justify-center text-brand-700 dark:text-brand-300 font-bold text-xs">{user.badgeId.slice(0, 2)}</div>
               <div className="flex-1 overflow-hidden"><p className="text-sm font-medium text-slate-900 dark:text-white truncate">{user.name}</p><p className="text-xs text-slate-500 dark:text-slate-400">Matrícula: {user.badgeId}</p></div>
