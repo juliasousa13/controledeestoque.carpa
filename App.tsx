@@ -37,7 +37,8 @@ import {
   Smartphone,
   Share,
   Info,
-  Users
+  Users,
+  Image as ImageIcon
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction } from './types';
 import { Logo } from './components/Logo';
@@ -488,7 +489,7 @@ export default function App() {
     const newUser = {
       badge_id: badgeInput,
       name: nameInput,
-      role: 'staff',
+      role: 'admin', // DEFAULTING TO ADMIN TO ENSURE WRITE PERMISSIONS
       created_at: new Date().toISOString()
     };
 
@@ -496,7 +497,7 @@ export default function App() {
     setRegisteredUsers(prev => [...prev, {
         badgeId: newUser.badge_id,
         name: newUser.name,
-        role: 'staff' as any,
+        role: newUser.role as any,
         createdAt: newUser.created_at
     }]);
 
@@ -507,7 +508,7 @@ export default function App() {
        setPendingCount(prev => prev + 1);
     }
 
-    loginUser({ badgeId: newUser.badge_id, name: newUser.name, role: 'staff' });
+    loginUser({ badgeId: newUser.badge_id, name: newUser.name, role: newUser.role as any });
     setBadgeInput('');
     setNameInput('');
     setIsRegistering(false);
@@ -1218,7 +1219,7 @@ export default function App() {
               </div>
             </form>
           )}
-          <div className="mt-8 flex justify-center"><button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 transition">{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button></div>
+          <div className="mt-8 flex justify-center"><button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 transition">{darkMode ? <Sun className="w-5 h-4" /> : <Moon className="w-5 h-4" />}</button></div>
         </div>
       </div>
     );
@@ -1374,14 +1375,27 @@ export default function App() {
               <button onClick={closeItemModal} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><X className="w-6 h-6" /></button>
             </div>
             <form onSubmit={handleSaveItem} className="flex-1 overflow-y-auto p-6 space-y-6">
-              <div className="flex justify-center">
-                <div className="relative group">
-                  <div className="w-32 h-32 rounded-xl bg-slate-100 dark:bg-slate-700 flex items-center justify-center overflow-hidden border-2 border-dashed border-slate-300 dark:border-slate-600">
-                    {formData.photoUrl ? <img src={formData.photoUrl} alt="Preview" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-slate-400" />}
-                  </div>
-                  <label className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition cursor-pointer rounded-xl text-white font-medium text-sm">Alterar Foto<input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} /></label>
+              
+              {/* Photo Upload Section - Updated with Two Buttons */}
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-32 h-32 rounded-xl bg-slate-100 dark:bg-slate-700 flex items-center justify-center overflow-hidden border-2 border-dashed border-slate-300 dark:border-slate-600 relative shadow-inner">
+                  {formData.photoUrl ? <img src={formData.photoUrl} alt="Preview" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-slate-400" />}
+                </div>
+                <div className="flex gap-2">
+                    <label className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-700 rounded-lg cursor-pointer text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-600 transition text-slate-700 dark:text-slate-300">
+                        <Camera className="w-4 h-4 text-brand-600 dark:text-brand-400" />
+                        Câmera
+                        {/* capture="environment" forces rear camera on mobile */}
+                        <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
+                    </label>
+                    <label className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-700 rounded-lg cursor-pointer text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-600 transition text-slate-700 dark:text-slate-300">
+                        <ImageIcon className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                        Galeria
+                        <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                    </label>
                 </div>
               </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="col-span-2">
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Nome do Material</label>
