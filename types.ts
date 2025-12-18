@@ -4,34 +4,33 @@ export interface InventoryItem {
   name: string;
   description?: string;
   unit: string;
-  minStock: number;
-  currentStock: number;
+  min_stock: number;
+  current_stock: number;
   location: string;
   department: string;
-  photoUrl?: string;
-  lastUpdated: string;
-  lastUpdatedBy: string;
-  lastUpdatedByBadge: string;
+  photo_url?: string;
+  last_updated: string;
+  last_updated_by: string;
 }
 
 export interface MovementLog {
   id: string;
-  itemId: string;
-  itemName: string;
+  item_id: string;
+  item_name: string;
   type: 'IN' | 'OUT' | 'CREATE' | 'EDIT' | 'DELETE';
   quantity: number;
-  userBadgeId: string;
-  userName: string;
+  user_badge_id: string;
+  user_name: string;
   timestamp: string;
   reason?: string;
 }
 
 export interface UserProfile {
-  badgeId: string;
+  badge_id: string;
   name: string;
   role: 'admin' | 'staff';
-  photoUrl?: string;
-  createdAt: string;
+  photo_url?: string;
+  created_at: string;
 }
 
 export interface UserSession {
@@ -42,10 +41,10 @@ export interface UserSession {
 }
 
 export enum AppView {
-  DASHBOARD = 'DASHBOARD',
-  INVENTORY = 'INVENTORY',
-  MOVEMENTS = 'MOVEMENTS',
-  USERS = 'CONFIGURAÇÕES'
+  DASHBOARD = 'PAINEL',
+  INVENTORY = 'ESTOQUE',
+  MOVEMENTS = 'HISTÓRICO',
+  USERS = 'EQUIPE'
 }
 
 export interface PendingAction {

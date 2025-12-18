@@ -4,13 +4,12 @@ import {
   LayoutDashboard, Package, Plus, Search, Trash2, Moon, Sun, Menu, X, 
   Camera, AlertTriangle, Loader2, RefreshCw, TrendingDown, Box, 
   History, Activity, Edit3, Users as UsersIcon, FileSpreadsheet, 
-  Upload, CheckCircle2, Settings, User as UserIcon, LogOut, ChevronRight,
-  Info, Check, CloudCheck, CloudOff, Database
+  Upload, CheckCircle2, User as UserIcon, LogOut, ChevronRight,
+  Info, Check, CloudCheck, CloudOff
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile } from './types';
 import { Logo } from './components/Logo';
 import { supabase } from './services/supabaseClient';
-import { saveOfflineData, loadOfflineData } from './services/offlineStorage';
 
 declare const XLSX: any;
 
@@ -46,44 +45,19 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const profileFileInputRef = useRef<HTMLInputElement>(null);
 
-  const mapFromDB = (i: any): InventoryItem => ({
-    id: String(i.id), 
-    name: i.name || '', 
-    unit: i.unit || 'UND', 
-    minStock: Number(i.min_stock) || 0,
-    currentStock: Number(i.current_stock) || 0, 
-    location: i.location || '', 
-    department: i.department || '',
-    photoUrl: i.photo_url, 
-    description: i.description, 
-    lastUpdated: i.last_updated || new Date().toISOString(),
-    lastUpdatedBy: i.last_updated_by || 'Sistema',
-    lastUpdatedByBadge: i.last_updated_by_badge || '0000'
-  });
-
   const fetchData = useCallback(async (showLoader = true) => {
     if (showLoader) setIsSyncing(true);
     try {
       const [itRes, movRes, userRes] = await Promise.all([
         supabase.from('inventory_items').select('*').order('name'),
-        supabase.from('movements').select('*').order('timestamp', { ascending: false }).limit(100),
+        supabase.from('movements').select('*').order('timestamp', { ascending: false }).limit(50),
         supabase.from('users').select('*').order('name')
       ]);
 
-      if (itRes.error) throw itRes.error;
-
-      if (itRes.data) setItems(itRes.data.map(mapFromDB));
-      if (movRes.data) {
-        setMovements(movRes.data.map(m => ({
-          id: String(m.id), itemId: m.item_id, itemName: m.item_name, type: m.type as any,
-          quantity: m.quantity, userBadgeId: m.user_badge_id, userName: m.user_name,
-          timestamp: m.timestamp, reason: m.reason
-        })));
-      }
+      if (itRes.data) setItems(itRes.data);
+      if (movRes.data) setMovements(movRes.data);
       if (userRes.data) {
-        setAllUsers(userRes.data.map(u => ({
-          badgeId: u.badge_id, name: u.name, role: u.role, photoUrl: u.photo_url, createdAt: u.created_at
-        })));
+        setAllUsers(userRes.data);
         const current = userRes.data.find(u => u.badge_id === user?.badgeId);
         if (current && user) {
           setUser({ ...user, name: current.name, photoUrl: current.photo_url });
@@ -94,8 +68,6 @@ export default function App() {
     } catch (err) {
       console.error("Erro na sincronização:", err);
       setDbStatus('offline');
-      const offline = loadOfflineData();
-      if (offline.items.length > 0) setItems(offline.items);
     } finally {
       setIsLoading(false);
       setIsSyncing(false);
@@ -113,7 +85,7 @@ export default function App() {
       reader.onloadend = () => {
         const base64String = reader.result as string;
         if (isProfile) setProfileFormData(prev => ({ ...prev, photoUrl: base64String }));
-        else setFormData(prev => ({ ...prev, photoUrl: base64String }));
+        else setFormData(prev => ({ ...prev, photo_url: base64String }));
       };
       reader.readAsDataURL(file);
     }
@@ -153,26 +125,22 @@ export default function App() {
 
     setIsSyncing(true);
     const itemToSave = {
-      id: editingItem?.id || `ART-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: editingItem?.id || `IT-${Date.now()}`,
       name: formData.name.toUpperCase(),
       unit: (formData.unit || 'UND').toUpperCase(),
-      min_stock: Number(formData.minStock) || 0,
-      current_stock: Number(formData.currentStock) || 0,
-      location: (formData.location || 'GERAL').toUpperCase(),
-      department: (formData.department || 'ESTOQUE').toUpperCase(),
-      photo_url: formData.photoUrl || null,
+      min_stock: Number(formData.min_stock) || 0,
+      current_stock: Number(formData.current_stock) || 0,
+      location: (formData.location || 'N/A').toUpperCase(),
+      department: (formData.department || 'GERAL').toUpperCase(),
+      photo_url: formData.photo_url || null,
       description: formData.description || '',
       last_updated: new Date().toISOString(),
-      last_updated_by: user.name,
-      last_updated_by_badge: user.badgeId
+      last_updated_by: user.name
     };
 
     try {
       const { error } = await supabase.from('inventory_items').upsert(itemToSave);
-      if (error) {
-        if (error.code === 'PGRST204') throw new Error("Coluna 'last_updated_by_badge' ausente no banco. Execute o SQL de ajuste.");
-        throw error;
-      }
+      if (error) throw error;
       
       await supabase.from('movements').insert({
         item_id: itemToSave.id,
@@ -190,27 +158,27 @@ export default function App() {
       setFormData({});
       fetchData(false);
     } catch (err: any) {
-      alert(err.message || "Erro ao salvar. Verifique sua conexão ou banco de dados.");
+      alert("Erro ao salvar: " + err.message);
     } finally {
       setIsSyncing(false);
     }
   };
 
   const handleExportExcel = () => {
-    if (items.length === 0) return alert("Nada para exportar.");
+    if (items.length === 0) return alert("Sem dados.");
     const data = items.map(i => ({
       "Material": i.name,
       "Setor": i.department,
       "Localizacao": i.location,
-      "Saldo": i.currentStock,
-      "EstoqueMin": i.minStock,
+      "Saldo": i.current_stock,
+      "EstoqueMin": i.min_stock,
       "Unidade": i.unit,
       "Descricao": i.description
     }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Estoque");
-    XLSX.writeFile(wb, `CARPA_Export_${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `CARPA_Estoque.xlsx`);
   };
 
   const handleImportExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -223,8 +191,8 @@ export default function App() {
         const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
         setIsSyncing(true);
         const toSave = json.map((item: any) => ({
-          id: `IMP-${Date.now()}-${Math.floor(Math.random() * 9999)}`,
-          name: (item["Material"] || "NÃO INFORMADO").toString().toUpperCase(),
+          id: `IMP-${Math.random().toString(36).substr(2, 9)}`,
+          name: (item["Material"] || "NOVO").toString().toUpperCase(),
           department: (item["Setor"] || "ESTOQUE").toString().toUpperCase(),
           location: (item["Localizacao"] || "N/A").toString().toUpperCase(),
           current_stock: Number(item["Saldo"] || 0),
@@ -232,14 +200,13 @@ export default function App() {
           unit: (item["Unidade"] || "UND").toString().toUpperCase(),
           description: item["Descricao"] || "",
           last_updated: new Date().toISOString(),
-          last_updated_by: user.name,
-          last_updated_by_badge: user.badgeId
+          last_updated_by: user.name
         }));
         const { error } = await supabase.from('inventory_items').upsert(toSave);
         if (error) throw error;
-        alert("Importação finalizada!");
+        alert("Importação concluída!");
         fetchData(false);
-      } catch (err) { alert("Erro no Excel. Verifique o Guia de Ajuda."); }
+      } catch (err) { alert("Falha no Excel. Verifique as colunas."); }
       finally { setIsSyncing(false); }
     };
     reader.readAsBinaryString(file);
@@ -257,20 +224,18 @@ export default function App() {
 
   if (isLoading) return (
     <div className={`h-screen flex flex-col items-center justify-center ${darkMode ? 'bg-[#020617]' : 'bg-white'}`}>
-      <Logo className="w-16 h-16 md:w-24 md:h-24 mb-6 animate-pulse" />
-      <Loader2 className="animate-spin text-brand-600 mb-4" size={32} />
-      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Sincronizando...</p>
+      <Logo className="w-16 h-16 animate-pulse" />
+      <Loader2 className="animate-spin text-brand-600 mt-4" size={32} />
     </div>
   );
 
   if (!user) {
     return (
       <div className={`h-screen flex items-center justify-center p-4 ${darkMode ? 'bg-[#020617]' : 'bg-slate-100'}`}>
-        <div className={`w-full max-w-[400px] p-8 md:p-12 rounded-[2.5rem] md:rounded-[4rem] shadow-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} backdrop-blur-xl animate-in zoom-in`}>
-          <div className="flex flex-col items-center mb-8 text-center">
-            <Logo className="w-16 h-16 mb-4" />
-            <h1 className={`text-3xl md:text-4xl font-black tracking-tighter mb-1 ${darkMode ? 'text-white' : 'text-slate-900'}`}>CARPA</h1>
-            <p className="text-[9px] font-black text-brand-500 uppercase tracking-widest">Controle de Estoque</p>
+        <div className={`w-full max-w-[360px] p-8 rounded-3xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-xl'}`}>
+          <div className="flex flex-col items-center mb-6 text-center">
+            <Logo className="w-14 h-14 mb-4" />
+            <h1 className={`text-2xl font-black tracking-tighter ${darkMode ? 'text-white' : 'text-slate-900'}`}>CARPA ESTOQUE</h1>
           </div>
           <form onSubmit={async (e) => {
             e.preventDefault();
@@ -279,15 +244,15 @@ export default function App() {
             if (data) {
               setUser({ badgeId: data.badge_id, name: data.name, role: data.role, photoUrl: data.photo_url });
             } else {
-              const name = prompt("Matrícula nova. Seu nome:");
+              const name = prompt("Matrícula nova. Nome:");
               if (name) {
                 await supabase.from('users').insert({ badge_id: badge, name: name.toUpperCase(), role: 'staff' });
                 setUser({ badgeId: badge, name: name.toUpperCase(), role: 'staff' });
               }
             }
-          }} className="space-y-6">
-            <input name="badge" required type="text" placeholder="MATRÍCULA" className={`w-full py-5 rounded-3xl font-black outline-none text-xl text-center uppercase shadow-inner border-2 border-transparent focus:border-brand-500 transition-all ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} />
-            <button className="w-full py-5 bg-brand-600 text-white font-black rounded-3xl shadow-xl hover:bg-brand-700 active:scale-95 transition-all text-base uppercase tracking-widest">ACESSAR</button>
+          }} className="space-y-4">
+            <input name="badge" required placeholder="MATRÍCULA" className={`w-full py-4 rounded-xl font-black text-center uppercase outline-none border-2 border-transparent focus:border-brand-500 ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} />
+            <button className="w-full py-4 bg-brand-600 text-white font-black rounded-xl uppercase tracking-widest active:scale-95 transition-all">ACESSAR</button>
           </form>
         </div>
       </div>
@@ -297,146 +262,101 @@ export default function App() {
   return (
     <div className={`h-screen flex flex-col lg:flex-row font-sans transition-colors duration-500 ${darkMode ? 'bg-[#020617] text-white' : 'bg-slate-50 text-slate-900'}`}>
       
-      {/* Sidebar / Topbar para Mobile */}
-      <aside className={`fixed lg:static inset-y-0 left-0 w-72 z-50 transform transition-transform duration-500 border-r ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} backdrop-blur-3xl ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+      {/* Sidebar Desktop / Overlay Mobile */}
+      <aside className={`fixed lg:static inset-y-0 left-0 w-64 z-50 transform transition-transform duration-500 border-r ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} backdrop-blur-3xl ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="flex flex-col h-full p-6">
           <div className="flex items-center justify-between mb-8">
-            <div className="flex items-center gap-3">
-              <Logo className="w-10 h-10" />
-              <span className="font-black text-xl tracking-tighter">CARPA</span>
+            <div className="flex items-center gap-2">
+              <Logo className="w-8 h-8" />
+              <span className="font-black text-lg tracking-tighter">CARPA</span>
             </div>
-            <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden p-2"><X size={20}/></button>
+            <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden p-1"><X size={20}/></button>
           </div>
           
           <nav className="flex-1 space-y-1">
             {[
-              { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Painel' },
-              { id: AppView.INVENTORY, icon: Package, label: 'Estoque' },
-              { id: AppView.MOVEMENTS, icon: History, label: 'Atividades' },
+              { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Resumo' },
+              { id: AppView.INVENTORY, icon: Package, label: 'Materiais' },
+              { id: AppView.MOVEMENTS, icon: History, label: 'Histórico' },
               { id: AppView.USERS, icon: UsersIcon, label: 'Equipe' }
             ].map(v => (
               <button 
                 key={v.id} 
                 onClick={() => { setCurrentView(v.id); setIsSidebarOpen(false); }} 
-                className={`w-full flex items-center gap-3 p-4 rounded-2xl font-bold text-xs transition-all ${currentView === v.id ? 'bg-brand-600 text-white shadow-lg' : 'text-slate-400 hover:bg-brand-500/10'}`}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl font-bold text-xs transition-all ${currentView === v.id ? 'bg-brand-600 text-white' : 'text-slate-400 hover:bg-brand-500/10'}`}
               >
-                <v.icon size={18} /> {v.label}
+                <v.icon size={16} /> {v.label}
               </button>
             ))}
           </nav>
 
-          <div className="mt-auto space-y-4 pt-6 border-t border-slate-800/50">
-            <button 
-              onClick={() => { setProfileFormData({ name: user.name, photoUrl: user.photoUrl || '' }); setIsProfileModalOpen(true); }}
-              className={`w-full p-3 rounded-2xl border text-left flex items-center gap-3 ${darkMode ? 'bg-slate-950/50 border-slate-800' : 'bg-white border-slate-200'}`}
-            >
-              <div className="w-10 h-10 rounded-xl bg-brand-600/10 flex items-center justify-center overflow-hidden border border-brand-500/20">
-                {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover" /> : <UserIcon className="text-brand-500" size={16}/>}
+          <div className="mt-auto space-y-3 pt-4 border-t border-slate-800/50">
+            <button onClick={() => setIsProfileModalOpen(true)} className={`w-full p-2 rounded-xl border flex items-center gap-3 ${darkMode ? 'bg-slate-950/50 border-slate-800' : 'bg-white border-slate-200'}`}>
+              <div className="w-8 h-8 rounded-lg bg-brand-600/10 flex items-center justify-center overflow-hidden border border-brand-500/20">
+                {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover" /> : <UserIcon size={14}/>}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-black text-[10px] truncate uppercase">{user.name}</p>
-                <p className="text-[7px] font-bold text-slate-500 uppercase tracking-widest">{user.badgeId}</p>
-              </div>
-              <ChevronRight size={12} className="text-slate-600" />
+              <p className="font-black text-[10px] truncate flex-1 uppercase">{user.name}</p>
             </button>
             
             <div className="flex gap-2">
-              <button onClick={() => setDarkMode(!darkMode)} className={`flex-1 p-3 rounded-xl border flex justify-center ${darkMode ? 'border-slate-800 bg-slate-950/50' : 'border-slate-200 bg-white'}`}>
-                {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
-              </button>
-              <button onClick={() => setUser(null)} className="flex-1 p-3 bg-red-500/10 text-red-500 rounded-xl font-black text-[8px] uppercase flex items-center justify-center gap-2 border border-red-500/20">
-                SAIR
-              </button>
-            </div>
-
-            <div className="flex items-center justify-center gap-2 pt-2">
-              {isSyncing ? <RefreshCw size={10} className="animate-spin text-brand-500" /> : <CloudCheck size={10} className="text-emerald-500" />}
-              <span className="text-[6px] font-black text-slate-500 uppercase tracking-widest">
-                {dbStatus === 'online' ? `Sincronizado: ${lastSync?.toLocaleTimeString() || '--'}` : 'Offline'}
-              </span>
+              <button onClick={() => setDarkMode(!darkMode)} className="flex-1 p-2 rounded-lg border flex justify-center"><Sun size={14}/></button>
+              <button onClick={() => setUser(null)} className="flex-1 p-2 bg-red-500/10 text-red-500 rounded-lg font-black text-[9px] uppercase">SAIR</button>
             </div>
           </div>
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-        <header className="h-16 md:h-20 border-b flex items-center justify-between px-4 md:px-8 bg-inherit/40 backdrop-blur-xl sticky top-0 z-30">
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <header className="h-14 border-b flex items-center justify-between px-4 bg-inherit/40 backdrop-blur-xl sticky top-0 z-30">
           <div className="flex items-center gap-3">
-            <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2"><Menu size={20}/></button>
-            <h2 className="font-black text-sm md:text-xl uppercase tracking-tighter">{currentView}</h2>
+            <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2"><Menu size={18}/></button>
+            <h2 className="font-black text-xs md:text-sm uppercase tracking-tighter">{currentView}</h2>
           </div>
           
           <div className="flex gap-2">
             {currentView === AppView.INVENTORY && (
-              <button onClick={() => { setEditingItem(null); setFormData({}); setIsItemModalOpen(true); }} className="bg-brand-600 text-white p-2.5 md:px-5 md:py-3 rounded-xl font-black text-[9px] md:text-[10px] flex items-center gap-2 shadow-lg shadow-brand-500/20 active:scale-95 transition-all uppercase">
-                <Plus size={14}/> <span className="hidden sm:inline">Novo</span>
+              <button onClick={() => { setEditingItem(null); setFormData({}); setIsItemModalOpen(true); }} className="bg-brand-600 text-white px-4 py-2 rounded-lg font-black text-[9px] flex items-center gap-1.5 shadow-lg active:scale-95 uppercase">
+                <Plus size={12}/> NOVO
               </button>
             )}
             {selectedItemIds.length > 0 && (
-              <button onClick={handleBulkDelete} className="bg-red-600 text-white p-2.5 md:px-5 md:py-3 rounded-xl font-black text-[9px] md:text-[10px] flex items-center gap-2 animate-in slide-in-from-top-4 uppercase">
-                <Trash2 size={14}/> <span className="hidden sm:inline">Excluir ({selectedItemIds.length})</span>
+              <button onClick={handleBulkDelete} className="bg-red-600 text-white px-4 py-2 rounded-lg font-black text-[9px] flex items-center gap-1.5 uppercase">
+                <Trash2 size={12}/> EXCLUIR
               </button>
             )}
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-8">
-          <div className="max-w-7xl mx-auto space-y-6 pb-12">
+        <div className="flex-1 overflow-y-auto p-4 md:p-6">
+          <div className="max-w-6xl mx-auto space-y-4">
             
             {currentView === AppView.INVENTORY && (
-              <div className="space-y-4 md:space-y-6">
-                <div className={`p-3 px-5 md:p-4 md:px-8 rounded-2xl md:rounded-[3rem] border flex items-center gap-3 ${darkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200'}`}>
-                  <Search className="text-slate-500" size={16}/>
-                  <input 
-                    value={searchTerm} onChange={e => setSearchTerm(e.target.value)} 
-                    placeholder="PESQUISAR..." 
-                    className="flex-1 bg-transparent border-none outline-none font-bold text-center uppercase text-[10px] md:text-xs tracking-widest" 
-                  />
-                  {searchTerm && <button onClick={() => setSearchTerm('')}><X size={14}/></button>}
+              <div className="space-y-4">
+                <div className={`p-2 px-4 rounded-xl border flex items-center gap-2 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white'}`}>
+                  <Search className="text-slate-500" size={14}/>
+                  <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="PESQUISAR..." className="flex-1 bg-transparent border-none outline-none font-bold text-center uppercase text-[10px]" />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6 animate-in fade-in">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 animate-in fade-in">
                   {filteredItems.map(item => {
                     const isSelected = selectedItemIds.includes(item.id);
                     return (
-                      <div 
-                        key={item.id} 
-                        onClick={() => {
-                          if (selectedItemIds.length > 0) {
-                            setSelectedItemIds(prev => isSelected ? prev.filter(id => id !== item.id) : [...prev, item.id]);
-                          }
-                        }}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setSelectedItemIds(prev => isSelected ? prev.filter(id => id !== item.id) : [...prev, item.id]);
-                        }}
-                        className={`group relative p-4 md:p-6 rounded-3xl border transition-all duration-300 ${isSelected ? 'border-brand-500 bg-brand-500/5' : darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white shadow-sm'}`}
-                      >
-                        <div className="aspect-square bg-slate-950/40 rounded-2xl mb-4 overflow-hidden relative border border-slate-800/20">
-                          {item.photoUrl ? (
-                            <img src={item.photoUrl} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center opacity-10"><Package size={32}/></div>
-                          )}
-                          <div className="absolute top-2 left-2 bg-slate-900/80 backdrop-blur px-2 py-0.5 rounded-lg text-[6px] font-black text-white uppercase">{item.location}</div>
-                          {isSelected && <div className="absolute inset-0 bg-brand-600/30 flex items-center justify-center backdrop-blur-sm"><CheckCircle2 className="text-white" size={32}/></div>}
+                      <div key={item.id} onClick={() => { if (selectedItemIds.length > 0) setSelectedItemIds(prev => isSelected ? prev.filter(id => id !== item.id) : [...prev, item.id]); }} onContextMenu={(e) => { e.preventDefault(); setSelectedItemIds(prev => isSelected ? prev.filter(id => id !== item.id) : [...prev, item.id]); }} className={`group p-3 rounded-2xl border transition-all ${isSelected ? 'border-brand-500 bg-brand-500/5' : darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white shadow-sm'}`}>
+                        <div className="aspect-square bg-slate-950/40 rounded-xl mb-3 overflow-hidden relative border border-slate-800/10">
+                          {item.photo_url ? <img src={item.photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center opacity-10"><Package size={24}/></div>}
+                          <div className="absolute top-1.5 left-1.5 bg-slate-900/80 px-2 py-0.5 rounded-md text-[6px] font-black text-white uppercase">{item.location}</div>
+                          {isSelected && <div className="absolute inset-0 bg-brand-600/20 flex items-center justify-center backdrop-blur-sm"><CheckCircle2 className="text-white" size={24}/></div>}
                         </div>
-                        
-                        <h4 className="font-black text-xs md:text-sm uppercase truncate mb-1">{item.name}</h4>
-                        <div className="flex items-center gap-2 mb-3">
-                           <span className={`text-[7px] font-black px-1.5 py-0.5 rounded-md uppercase ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-500'}`}>{item.department}</span>
-                           <span className="text-[7px] font-bold text-slate-500 uppercase">{item.unit}</span>
-                        </div>
-
-                        <div className="flex items-center justify-between pt-3 border-t border-slate-800/20">
+                        <h4 className="font-black text-[11px] uppercase truncate mb-1">{item.name}</h4>
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-800/10">
                           <div className="flex flex-col">
-                            <span className={`text-2xl md:text-3xl font-black tracking-tighter ${item.currentStock <= item.minStock ? 'text-red-500' : 'text-slate-200'}`}>{item.currentStock}</span>
-                            <span className="text-[6px] font-black text-slate-500 uppercase">SALDO</span>
+                            <span className={`text-xl font-black ${item.current_stock <= item.min_stock ? 'text-red-500' : 'text-slate-200'}`}>{item.current_stock}</span>
+                            <span className="text-[6px] font-black text-slate-500">SALDO</span>
                           </div>
-                          <div className="flex gap-1 md:opacity-0 group-hover:opacity-100 transition-opacity">
-                             <button onClick={(e) => { e.stopPropagation(); setMovementItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg"><Plus size={14}/></button>
-                             <button onClick={(e) => { e.stopPropagation(); setMovementItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-2 bg-orange-500/10 text-orange-500 rounded-lg"><TrendingDown size={14}/></button>
-                             <button onClick={(e) => { e.stopPropagation(); setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-2 bg-slate-800 text-slate-400 rounded-lg"><Edit3 size={14}/></button>
+                          <div className="flex gap-1">
+                             <button onClick={(e) => { e.stopPropagation(); setMovementItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg"><Plus size={12}/></button>
+                             <button onClick={(e) => { e.stopPropagation(); setMovementItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-2 bg-orange-500/10 text-orange-500 rounded-lg"><TrendingDown size={12}/></button>
+                             <button onClick={(e) => { e.stopPropagation(); setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-2 bg-slate-800 text-slate-400 rounded-lg"><Edit3 size={12}/></button>
                           </div>
                         </div>
                       </div>
@@ -446,139 +366,91 @@ export default function App() {
               </div>
             )}
 
-            {currentView === AppView.USERS && (
-              <div className="space-y-6 animate-in slide-in-from-bottom-4">
-                <h3 className="text-xl font-black uppercase tracking-tighter">Colaboradores ({allUsers.length})</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {allUsers.map(u => (
-                    <div key={u.badgeId} className={`p-5 rounded-3xl border flex items-center gap-4 ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white shadow-sm'}`}>
-                      <div className="w-12 h-12 rounded-xl bg-brand-600/5 flex items-center justify-center overflow-hidden border border-brand-500/20">
-                        {u.photoUrl ? <img src={u.photoUrl} className="w-full h-full object-cover" /> : <UserIcon className="text-brand-500" size={20}/>}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-black text-xs uppercase truncate">{u.name}</p>
-                        <p className="text-[8px] font-bold text-slate-500 tracking-widest">ID: {u.badgeId}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            {currentView === AppView.DASHBOARD && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                 <div className={`p-6 rounded-2xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white shadow-sm'}`}>
+                    <Box className="text-brand-500 mb-2" size={18}/>
+                    <p className="text-[8px] font-black uppercase text-slate-500">Total Itens</p>
+                    <h3 className="text-3xl font-black">{items.length}</h3>
+                 </div>
+                 <div className={`p-6 rounded-2xl border ${darkMode ? 'bg-red-500/10 border-red-500/20' : 'bg-red-50 border-red-100'}`}>
+                    <AlertTriangle className="text-red-500 mb-2" size={18}/>
+                    <p className="text-[8px] font-black uppercase text-red-500">Reposição</p>
+                    <h3 className="text-3xl font-black text-red-500">{items.filter(i => i.current_stock <= i.min_stock).length}</h3>
+                 </div>
+                 <div className={`p-6 rounded-2xl border ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-100'}`}>
+                    <Activity className="text-emerald-500 mb-2" size={18}/>
+                    <p className="text-[8px] font-black uppercase text-emerald-500">Movimentações</p>
+                    <h3 className="text-3xl font-black text-emerald-500">{movements.length}</h3>
+                 </div>
               </div>
             )}
 
-            {currentView === AppView.DASHBOARD && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-8">
-                 <div className={`p-6 md:p-10 rounded-[2rem] md:rounded-[3rem] border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white shadow-sm'}`}>
-                    <Box className="text-brand-500 mb-4" size={24}/>
-                    <p className="text-[8px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest">Ativos</p>
-                    <h3 className="text-4xl md:text-7xl font-black tracking-tighter">{items.length}</h3>
+            {currentView === AppView.MOVEMENTS && (
+               <div className="space-y-3">
+                 <h3 className="text-xs font-black uppercase">Atividades Recentes</h3>
+                 <div className="space-y-2">
+                   {movements.map(m => (
+                     <div key={m.id} className={`p-3 rounded-xl border flex items-center justify-between text-[10px] ${darkMode ? 'bg-slate-900/40 border-slate-800' : 'bg-white'}`}>
+                       <div className="flex gap-3 items-center">
+                         <div className={`p-1.5 rounded-lg ${m.type === 'IN' ? 'bg-emerald-500/10 text-emerald-500' : m.type === 'OUT' ? 'bg-orange-500/10 text-orange-500' : 'bg-slate-500/10 text-slate-500'}`}>
+                            {m.type === 'IN' ? <Plus size={14}/> : m.type === 'OUT' ? <TrendingDown size={14}/> : <Edit3 size={14}/>}
+                         </div>
+                         <div>
+                           <p className="font-black uppercase">{m.item_name}</p>
+                           <p className="text-[8px] text-slate-500">{new Date(m.timestamp).toLocaleString()} • {m.user_name}</p>
+                         </div>
+                       </div>
+                       <p className={`font-black ${m.type === 'IN' ? 'text-emerald-500' : 'text-orange-500'}`}>{m.type === 'IN' ? '+' : '-'}{m.quantity}</p>
+                     </div>
+                   ))}
                  </div>
-                 <div className={`p-6 md:p-10 rounded-[2rem] md:rounded-[3rem] border ${darkMode ? 'bg-red-500/10 border-red-500/20' : 'bg-red-50 border-red-100'}`}>
-                    <AlertTriangle className="text-red-500 mb-4" size={24}/>
-                    <p className="text-[8px] md:text-[10px] font-black uppercase text-red-500 tracking-widest">Reposição</p>
-                    <h3 className="text-4xl md:text-7xl font-black tracking-tighter text-red-500">{items.filter(i => i.currentStock <= i.minStock).length}</h3>
-                 </div>
-                 <div className={`p-6 md:p-10 rounded-[2rem] md:rounded-[3rem] border ${darkMode ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-100'}`}>
-                    <Activity className="text-emerald-500 mb-4" size={24}/>
-                    <p className="text-[8px] md:text-[10px] font-black uppercase text-emerald-500 tracking-widest">Eventos</p>
-                    <h3 className="text-4xl md:text-7xl font-black tracking-tighter text-emerald-500">{movements.length}</h3>
-                 </div>
-              </div>
+               </div>
             )}
           </div>
         </div>
 
-        {/* Floating Help / Tools */}
+        {/* Tools flutuantes para Mobile */}
         {currentView === AppView.INVENTORY && (
-           <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40">
-             <button onClick={() => setIsImportHelpOpen(true)} className="w-12 h-12 rounded-full bg-slate-800 text-white flex items-center justify-center shadow-xl border border-white/10"><Info size={20}/></button>
-             <button onClick={handleExportExcel} className="w-12 h-12 rounded-full bg-brand-600 text-white flex items-center justify-center shadow-xl border border-white/10"><FileSpreadsheet size={20}/></button>
-             <label className="w-12 h-12 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-xl border border-white/10 cursor-pointer">
-                <Upload size={20}/>
+           <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-40">
+             <button onClick={() => setIsImportHelpOpen(true)} className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center shadow-lg"><Info size={16}/></button>
+             <button onClick={handleExportExcel} className="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center shadow-lg"><FileSpreadsheet size={16}/></button>
+             <label className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-lg cursor-pointer">
+                <Upload size={16}/>
                 <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleImportExcel} />
              </label>
            </div>
         )}
       </main>
 
-      {/* MODAL AJUDA EXCEL */}
-      {isImportHelpOpen && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-xl">
-          <div className={`rounded-3xl w-full max-w-sm p-8 border border-slate-800 text-center ${darkMode ? 'bg-slate-900' : 'bg-white'}`}>
-            <h3 className="text-xl font-black uppercase tracking-tighter mb-4">Mapeamento de Colunas</h3>
-            <p className="text-[10px] text-slate-500 mb-6 uppercase tracking-widest leading-relaxed">Sua planilha deve ter as colunas abaixo na linha 1:</p>
-            <div className="grid grid-cols-2 gap-2 mb-8">
-              {["Material", "Setor", "Localizacao", "Saldo", "EstoqueMin", "Unidade"].map(col => (
-                <div key={col} className={`p-3 rounded-xl flex items-center justify-between font-black uppercase text-[8px] tracking-widest border ${darkMode ? 'bg-slate-950/50 border-slate-800' : 'bg-slate-50'}`}>
-                  {col} <Check size={10} className="text-emerald-500" />
-                </div>
-              ))}
-            </div>
-            <button onClick={() => setIsImportHelpOpen(false)} className="w-full py-4 bg-brand-600 text-white font-black rounded-2xl uppercase text-[10px]">FECHAR</button>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL PERFIL */}
-      {isProfileModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-2xl">
-          <div className={`rounded-[2.5rem] w-full max-w-sm border border-slate-800 shadow-2xl ${darkMode ? 'bg-slate-900' : 'bg-white'}`}>
-            <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-brand-600 text-white">
-              <h3 className="text-lg font-black uppercase tracking-tighter">Ajustar Perfil</h3>
-              <button onClick={() => setIsProfileModalOpen(false)}><X size={20} /></button>
-            </div>
-            <form onSubmit={handleUpdateProfile} className="p-8 space-y-6 text-center">
-              <div className="relative group mx-auto w-32 h-32">
-                <div className="w-32 h-32 rounded-3xl bg-slate-950 border-4 border-slate-800 overflow-hidden shadow-2xl">
-                  {profileFormData.photoUrl ? <img src={profileFormData.photoUrl} className="w-full h-full object-cover" /> : <UserIcon size={40} className="text-slate-700 m-auto mt-10" />}
-                </div>
-                <button type="button" onClick={() => profileFileInputRef.current?.click()} className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity rounded-3xl flex flex-col items-center justify-center text-white">
-                  <Camera size={20}/>
-                  <span className="text-[8px] font-black mt-1 uppercase">MUDAR</span>
-                </button>
-                <input type="file" accept="image/*" capture="user" ref={profileFileInputRef} className="hidden" onChange={(e) => handlePhotoUpload(e, true)} />
-              </div>
-              <input required className={`w-full p-4 rounded-2xl font-black text-center uppercase shadow-inner outline-none ${darkMode ? 'bg-slate-950 text-white focus:border-brand-500' : 'bg-slate-50'}`} value={profileFormData.name} onChange={e => setProfileFormData({...profileFormData, name: e.target.value})} placeholder="SEU NOME" />
-              <button type="submit" className="w-full py-5 bg-brand-600 text-white rounded-2xl font-black uppercase text-xs shadow-xl active:scale-95 transition-all">SALVAR PERFIL</button>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* MODAL MATERIAL */}
       {isItemModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-2xl">
-          <div className={`rounded-[2.5rem] w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col border border-slate-800 ${darkMode ? 'bg-slate-900' : 'bg-white'}`}>
-            <div className="p-6 border-b border-slate-800 flex justify-between items-center px-8">
-              <h3 className="text-xl font-black uppercase tracking-tighter">{editingItem ? 'EDITAR' : 'NOVO'} MATERIAL</h3>
-              <button onClick={() => setIsItemModalOpen(false)}><X size={28} /></button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in zoom-in">
+          <div className={`rounded-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col border border-slate-800 ${darkMode ? 'bg-slate-900' : 'bg-white'}`}>
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center">
+              <h3 className="text-sm font-black uppercase">{editingItem ? 'EDITAR' : 'NOVO'} MATERIAL</h3>
+              <button onClick={() => setIsItemModalOpen(false)}><X size={20} /></button>
             </div>
-            <form onSubmit={handleSaveItem} className="p-8 space-y-6 overflow-y-auto">
-               <div className="flex flex-col md:flex-row gap-8">
-                  <div className="w-full md:w-56 space-y-4 flex flex-col items-center">
-                    <div className="aspect-square w-full rounded-3xl bg-slate-950 border-2 border-slate-800 overflow-hidden relative group">
-                      {formData.photoUrl ? <img src={formData.photoUrl} className="w-full h-full object-cover" /> : <Package size={40} className="m-auto mt-14 opacity-20" />}
-                      <button type="button" onClick={() => fileInputRef.current?.click()} className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
-                        <Camera size={24}/>
-                        <span className="text-[8px] font-black mt-2 uppercase">FOTO</span>
-                      </button>
-                    </div>
-                    <input type="file" accept="image/*" capture="environment" ref={fileInputRef} className="hidden" onChange={handlePhotoUpload} />
+            <form onSubmit={handleSaveItem} className="p-6 space-y-4 overflow-y-auto">
+               <div className="flex flex-col items-center gap-4">
+                  <div className="w-24 h-24 rounded-xl bg-slate-950 border-2 border-slate-800 overflow-hidden relative group">
+                    {formData.photo_url ? <img src={formData.photo_url} className="w-full h-full object-cover" /> : <Package size={24} className="m-auto mt-8 opacity-20" />}
+                    <button type="button" onClick={() => fileInputRef.current?.click()} className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white opacity-0 group-hover:opacity-100"><Camera size={16}/></button>
                   </div>
-                  <div className="flex-1 space-y-4">
-                    <input required className={`w-full p-4 rounded-xl font-black text-center uppercase shadow-inner outline-none focus:border-brand-500 border-2 border-transparent ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="NOME DO MATERIAL" />
-                    <div className="grid grid-cols-2 gap-4">
-                      <input className={`w-full p-4 rounded-xl font-bold text-center uppercase shadow-inner outline-none ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.department || ''} onChange={e => setFormData({...formData, department: e.target.value})} placeholder="SETOR" />
-                      <input className={`w-full p-4 rounded-xl font-bold text-center uppercase shadow-inner outline-none ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.location || ''} onChange={e => setFormData({...formData, location: e.target.value})} placeholder="LOCAL" />
-                    </div>
-                    <div className="grid grid-cols-3 gap-4">
-                      <input className={`w-full p-4 rounded-xl font-bold text-center uppercase shadow-inner ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.unit || 'UND'} onChange={e => setFormData({...formData, unit: e.target.value})} placeholder="UND" />
-                      <input type="number" className={`w-full p-4 rounded-xl font-bold text-center uppercase shadow-inner ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.minStock || 0} onChange={e => setFormData({...formData, minStock: Number(e.target.value)})} placeholder="MIN" />
-                      <input type="number" disabled={!!editingItem} className={`w-full p-4 rounded-xl font-bold text-center uppercase shadow-inner disabled:opacity-20 ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.currentStock || 0} onChange={e => setFormData({...formData, currentStock: Number(e.target.value)})} placeholder="SALDO" />
-                    </div>
+                  <input type="file" accept="image/*" capture="environment" ref={fileInputRef} className="hidden" onChange={handlePhotoUpload} />
+                  <input required className={`w-full p-3 rounded-lg font-black text-center uppercase outline-none focus:border-brand-500 border-2 border-transparent ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50'}`} value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="NOME DO MATERIAL" />
+               </div>
+               <div className="grid grid-cols-2 gap-3">
+                  <input className="p-3 rounded-lg font-bold text-center uppercase text-[10px] bg-slate-950/50" value={formData.department || ''} onChange={e => setFormData({...formData, department: e.target.value})} placeholder="SETOR" />
+                  <input className="p-3 rounded-lg font-bold text-center uppercase text-[10px] bg-slate-950/50" value={formData.location || ''} onChange={e => setFormData({...formData, location: e.target.value})} placeholder="LOCAL" />
+                  <input className="p-3 rounded-lg font-bold text-center uppercase text-[10px] bg-slate-950/50" value={formData.unit || 'UND'} onChange={e => setFormData({...formData, unit: e.target.value})} placeholder="UND" />
+                  <div className="flex gap-2">
+                    <input type="number" className="w-1/2 p-3 rounded-lg font-bold text-center text-[10px] bg-slate-950/50" value={formData.min_stock || 0} onChange={e => setFormData({...formData, min_stock: Number(e.target.value)})} placeholder="MIN" />
+                    <input type="number" disabled={!!editingItem} className="w-1/2 p-3 rounded-lg font-bold text-center text-[10px] bg-slate-950/50 disabled:opacity-20" value={formData.current_stock || 0} onChange={e => setFormData({...formData, current_stock: Number(e.target.value)})} placeholder="SALDO" />
                   </div>
                </div>
-               <button type="submit" disabled={isSyncing} className="w-full py-6 bg-brand-600 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl flex items-center justify-center gap-3">
-                 {isSyncing ? <Loader2 className="animate-spin" /> : 'CONCLUIR'}
+               <button type="submit" disabled={isSyncing} className="w-full py-4 bg-brand-600 text-white rounded-xl font-black uppercase text-[10px] shadow-lg">
+                 {isSyncing ? <Loader2 className="animate-spin m-auto" size={16}/> : 'SALVAR'}
                </button>
             </form>
           </div>
@@ -587,11 +459,11 @@ export default function App() {
 
       {/* MODAL MOVIMENTAÇÃO */}
       {isMovementModalOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-3xl animate-in fade-in">
-           <div className={`rounded-[2.5rem] w-full max-w-sm overflow-hidden border border-slate-800 ${darkMode ? 'bg-slate-900' : 'bg-white'}`}>
-              <div className={`p-8 text-center ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'} text-white`}>
-                 <h3 className="text-4xl font-black uppercase tracking-tighter">{movementType === 'IN' ? 'Entrada' : 'Retirada'}</h3>
-                 <p className="text-[8px] mt-2 font-black uppercase tracking-widest opacity-80 truncate px-4">{items.find(i => i.id === movementItemId)?.name}</p>
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in">
+           <div className={`rounded-2xl w-full max-w-[320px] overflow-hidden border border-slate-800 ${darkMode ? 'bg-slate-900' : 'bg-white'}`}>
+              <div className={`p-6 text-center ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'} text-white`}>
+                 <h3 className="text-2xl font-black uppercase">{movementType === 'IN' ? 'Entrada' : 'Retirada'}</h3>
+                 <p className="text-[8px] mt-1 font-black uppercase opacity-80 truncate">{items.find(i => i.id === movementItemId)?.name}</p>
               </div>
               <form onSubmit={async (e) => {
                 e.preventDefault();
@@ -599,24 +471,21 @@ export default function App() {
                 if (!item || !user) return;
                 setIsSyncing(true);
                 const qty = Number(moveData.quantity);
-                const newStock = movementType === 'IN' ? item.currentStock + qty : item.currentStock - qty;
+                const newStock = movementType === 'IN' ? item.current_stock + qty : item.current_stock - qty;
                 try {
-                  const { error: upError } = await supabase.from('inventory_items').update({ current_stock: newStock, last_updated: new Date().toISOString(), last_updated_by: user.name, last_updated_by_badge: user.badgeId }).eq('id', item.id);
+                  const { error: upError } = await supabase.from('inventory_items').update({ current_stock: newStock, last_updated: new Date().toISOString(), last_updated_by: user.name }).eq('id', item.id);
                   if (upError) throw upError;
                   await supabase.from('movements').insert({ item_id: item.id, item_name: item.name, type: movementType, quantity: qty, user_badge_id: user.badgeId, user_name: user.name, timestamp: new Date().toISOString(), reason: moveData.reason });
                   setIsMovementModalOpen(false);
                   setMoveData({ quantity: 1, reason: '' });
                   fetchData(false);
-                } catch (err) { alert("Erro ao processar movimentação."); } 
+                } catch (err) { alert("Erro ao processar."); } 
                 finally { setIsSyncing(false); }
-              }} className="p-8 space-y-6 text-center">
-                 <div className="space-y-2">
-                   <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest">QTD</label>
-                   <input type="number" min="1" required autoFocus className={`w-full text-7xl font-black text-center p-4 rounded-2xl outline-none shadow-inner border-2 border-transparent focus:border-brand-500 transition-all ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'}`} value={moveData.quantity} onChange={e => setMoveData({...moveData, quantity: Number(e.target.value)})} />
-                 </div>
-                 <input type="text" placeholder="JUSTIFICATIVA" className={`w-full p-4 rounded-xl font-black text-center uppercase shadow-inner text-xs outline-none ${darkMode ? 'bg-slate-950 text-white focus:border-brand-500' : 'bg-slate-50'}`} value={moveData.reason} onChange={e => setMoveData({...moveData, reason: e.target.value})} />
-                 <button type="submit" disabled={isSyncing} className={`w-full py-6 text-white text-lg font-black rounded-2xl shadow-xl uppercase active:scale-95 transition-all ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'}`}>
-                   {isSyncing ? <Loader2 className="animate-spin" /> : 'CONFIRMAR'}
+              }} className="p-6 space-y-4 text-center">
+                 <input type="number" min="1" required autoFocus className={`w-full text-5xl font-black text-center p-4 rounded-xl outline-none bg-slate-950 text-white`} value={moveData.quantity} onChange={e => setMoveData({...moveData, quantity: Number(e.target.value)})} />
+                 <input placeholder="JUSTIFICATIVA" className={`w-full p-3 rounded-lg text-center uppercase text-[9px] bg-slate-950 text-white outline-none`} value={moveData.reason} onChange={e => setMoveData({...moveData, reason: e.target.value})} />
+                 <button type="submit" disabled={isSyncing} className={`w-full py-4 text-white font-black rounded-xl uppercase text-xs ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'}`}>
+                   {isSyncing ? <Loader2 className="animate-spin m-auto" /> : 'CONFIRMAR'}
                  </button>
                  <button type="button" onClick={() => setIsMovementModalOpen(false)} className="w-full text-[8px] font-black text-slate-500 uppercase">CANCELAR</button>
               </form>
