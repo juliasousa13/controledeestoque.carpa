@@ -1,29 +1,34 @@
-import { GoogleGenAI } from "@google/genai";
 
-const apiKey = process.env.API_KEY || '';
-let ai: GoogleGenAI | null = null;
+import { GoogleGenAI, Type } from "@google/genai";
 
-if (apiKey) {
-  ai = new GoogleGenAI({ apiKey });
-}
-
-export const generateProductDescription = async (productName: string, department: string): Promise<string> => {
-  if (!ai) {
-    console.warn("API Key is missing. Skipping AI generation.");
-    return "Descrição indisponível (Chave API não configurada).";
-  }
-
+export const generateProductInsights = async (productName: string, department: string) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
   try {
-    const prompt = `Escreva uma descrição técnica curta e profissional (máximo 2 frases) para um item de estoque chamado "${productName}" usado no departamento de "${department}".`;
-    
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
+      model: 'gemini-3-flash-preview',
+      contents: `Aja como um consultor de suprimentos. Analise o item "${productName}" do setor "${department}".
+      Retorne um JSON com:
+      - description: Uma descrição técnica e formal (máx 120 caracteres).
+      - suggestedCategory: Uma categoria (Consumível, Ferramenta, Equipamento, EPI, ou Matéria-prima).
+      - storageAdvice: Uma dica curtíssima de armazenamento.`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            description: { type: Type.STRING },
+            suggestedCategory: { type: Type.STRING },
+            storageAdvice: { type: Type.STRING }
+          },
+          required: ["description", "suggestedCategory", "storageAdvice"]
+        }
+      }
     });
 
-    return response.text || "";
+    return JSON.parse(response.text || "{}");
   } catch (error) {
-    console.error("Error generating description:", error);
-    return "";
+    console.error("Erro ao gerar insights com IA:", error);
+    return null;
   }
 };

@@ -1,3 +1,4 @@
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -5,11 +6,13 @@ export interface InventoryItem {
   unit: string;
   minStock: number;
   currentStock: number;
+  price: number; // Preço unitário para cálculo de valor de estoque
   location: string;
   department: string;
+  category: string; // Categoria do item (Ex: Consumível, Ativo, Ferramenta)
   photoUrl?: string;
   lastUpdated: string;
-  lastUpdatedBy?: string; // Nome do colaborador que alterou por último
+  lastUpdatedBy?: string;
 }
 
 export interface MovementLog {
@@ -19,7 +22,7 @@ export interface MovementLog {
   type: 'IN' | 'OUT';
   quantity: number;
   userBadgeId: string;
-  userName: string; // Nome do colaborador
+  userName: string;
   timestamp: string;
   reason?: string;
 }
@@ -44,11 +47,10 @@ export enum AppView {
   SETTINGS = 'SETTINGS',
 }
 
-// Tipos para Sincronização Offline
 export type SyncActionType = 'ADD_ITEM' | 'UPDATE_ITEM' | 'DELETE_ITEM' | 'ADD_MOVEMENT' | 'ADD_USER' | 'ADD_DEPT' | 'DELETE_DEPT';
 
 export interface PendingAction {
-  id: string; // ID único da ação
+  id: string;
   type: SyncActionType;
   payload: any;
   timestamp: number;
