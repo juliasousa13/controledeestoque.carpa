@@ -1,3 +1,4 @@
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
@@ -14,16 +15,11 @@ root.render(
   </React.StrictMode>
 );
 
-// Registrar Service Worker para funcionalidade Offline
+// Service Worker desativado em desenvolvimento para evitar erro de origin
+/*
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then(
-      (registration) => {
-        console.log('ServiceWorker registration successful with scope: ', registration.scope);
-      },
-      (err) => {
-        console.log('ServiceWorker registration failed: ', err);
-      }
-    );
+    navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration skipped'));
   });
 }
+*/
