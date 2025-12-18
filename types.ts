@@ -28,7 +28,7 @@ export interface MovementLog {
 export interface UserProfile {
   badge_id: string;
   name: string;
-  role: 'admin' | 'staff';
+  role: string; // Ex: 'Estoquista', 'Gerente', 'Técnico'
   photo_url?: string;
   created_at: string;
 }
@@ -36,7 +36,7 @@ export interface UserProfile {
 export interface UserSession {
   badgeId: string;
   name: string;
-  role: 'admin' | 'staff';
+  role: string;
   photoUrl?: string;
 }
 
@@ -44,12 +44,15 @@ export enum AppView {
   DASHBOARD = 'PAINEL',
   INVENTORY = 'ESTOQUE',
   MOVEMENTS = 'HISTÓRICO',
-  USERS = 'EQUIPE'
+  USERS = 'EQUIPE',
+  SETTINGS = 'CONFIGURAÇÕES'
 }
 
+// Added PendingAction interface to fix the module export error in services/offlineStorage.ts
 export interface PendingAction {
   id: string;
   type: string;
-  payload: any;
+  table?: string;
+  data: any;
   timestamp: number;
 }
