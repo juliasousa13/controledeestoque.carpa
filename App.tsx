@@ -3,9 +3,9 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { 
   LayoutDashboard, Package, Plus, Search, Trash2, Moon, Sun, Menu, X, 
   Camera, AlertTriangle, Loader2, RefreshCw, TrendingDown, Box, 
-  History, Activity, Edit3, Users as UsersIcon, FileSpreadsheet, 
-  Upload, CheckCircle2, User as UserIcon, LogOut, ChevronRight,
-  Info, Check, CloudCheck, Settings as SettingsIcon, Database, ShieldCheck
+  History, Activity, Edit3, Users, FileSpreadsheet, 
+  Upload, CheckCircle2, User, LogOut, ChevronRight,
+  Info, Check, Database, ShieldCheck, Settings
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile } from './types';
 import { Logo } from './components/Logo';
@@ -96,6 +96,12 @@ export default function App() {
     fetchData();
   }, [fetchData]);
 
+  const toggleItemSelection = (id: string) => {
+    setSelectedItemIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>, target: 'item' | 'user') => {
     const file = e.target.files?.[0];
     if (file) {
@@ -107,12 +113,6 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     }
-  };
-
-  const toggleItemSelection = (id: string) => {
-    setSelectedItemIds(prev => 
-      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
-    );
   };
 
   const handleSaveUser = async (e: React.FormEvent) => {
@@ -187,7 +187,7 @@ export default function App() {
     if (!user || !confirm(`Deseja realmente excluir o item "${item.name}"? Esta ação é irreversível.`)) return;
     setIsSyncing(true);
     try {
-      // Registrar exclusão no histórico antes de remover
+      // Registrar exclusão no histórico antes de remover para controle rotativo
       await supabase.from('movements').insert({
         item_id: item.id,
         item_name: item.name,
@@ -414,7 +414,7 @@ export default function App() {
               { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Painel Principal' },
               { id: AppView.INVENTORY, icon: Package, label: 'Itens em Estoque' },
               { id: AppView.MOVEMENTS, icon: History, label: 'Histórico' },
-              { id: AppView.SETTINGS, icon: SettingsIcon, label: 'Configurações' }
+              { id: AppView.SETTINGS, icon: Settings, label: 'Configurações' }
             ].map(v => (
               <button 
                 key={v.id} 
@@ -429,7 +429,7 @@ export default function App() {
           <div className="mt-auto space-y-3 pt-4 border-t border-slate-200 dark:border-slate-800/50">
             <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-brand-600/10 flex items-center justify-center overflow-hidden border border-brand-500/20">
-                {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover" /> : <UserIcon size={16}/>}
+                {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover" /> : <User size={16}/>}
               </div>
               <div className="min-w-0 flex-1">
                 <p className="font-black text-[10px] truncate uppercase leading-none">{user.name}</p>
@@ -457,7 +457,7 @@ export default function App() {
           <div className="flex gap-2">
             {selectedItemIds.length > 0 && (
               <button onClick={handleDeleteSelected} className="bg-red-500 text-white px-4 py-2 rounded-lg font-black text-[10px] flex items-center gap-2 shadow-lg active:scale-95 uppercase animate-in slide-in-from-top-2">
-                <Trash2 size={14}/> EXCLUIR ({selectedItemIds.length})
+                <Trash2 size={14}/> EXCLUIR SELECIONADOS ({selectedItemIds.length})
               </button>
             )}
             {currentView === AppView.INVENTORY && (
@@ -517,7 +517,7 @@ export default function App() {
                         
                         {isSelected && (
                           <div className="absolute inset-0 border-2 border-brand-500 rounded-2xl pointer-events-none">
-                            <div className="absolute top-2 right-2 bg-brand-500 text-white p-0.5 rounded-full">
+                            <div className="absolute top-2 right-2 bg-brand-500 text-white p-0.5 rounded-full flex items-center justify-center">
                               <Check size={8} strokeWidth={4} />
                             </div>
                           </div>
@@ -531,8 +531,6 @@ export default function App() {
 
             {currentView === AppView.SETTINGS && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-bottom-4">
-                
-                {/* Status Sincronização */}
                 <div className="p-8 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
                   <div className="flex items-center gap-3 mb-6">
                     <Database className="text-brand-500" size={20} />
@@ -550,24 +548,16 @@ export default function App() {
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Última Sincronização</span>
                       <span className="text-[9px] font-black uppercase text-slate-900 dark:text-white">{lastSync ? lastSync.toLocaleString() : 'Nunca'}</span>
                     </div>
-                    <div className="flex justify-between items-center p-4 rounded-xl bg-slate-50 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800">
-                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Sincronização Resiliente</span>
-                      <div className="flex items-center gap-2">
-                         <ShieldCheck className="text-emerald-500" size={14} />
-                         <span className="text-[9px] font-black uppercase text-emerald-500">Ativa</span>
-                      </div>
-                    </div>
                     <button onClick={() => fetchData(true)} className="w-full py-4 border-2 border-brand-500/20 text-brand-500 font-black rounded-xl uppercase text-[10px] transition-all hover:bg-brand-500 hover:text-white active:scale-95 flex items-center justify-center gap-2">
                        <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} /> FORÇAR ATUALIZAÇÃO
                     </button>
                   </div>
                 </div>
 
-                {/* Gerenciamento de Equipe */}
                 <div className="p-8 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
                   <div className="flex items-center justify-between mb-6">
                     <div className="flex items-center gap-3">
-                      <UsersIcon className="text-brand-500" size={20} />
+                      <Users className="text-brand-500" size={20} />
                       <h3 className="text-sm font-black uppercase tracking-tighter">Equipe</h3>
                     </div>
                     <button onClick={() => { setEditingUser(null); setUserFormData({ badge_id: '', name: '', role: '', photo_url: '' }); setIsUserEditModalOpen(true); }} className="bg-brand-600 text-white px-3 py-1.5 rounded-lg text-[8px] font-black uppercase shadow-lg">Novo Cadastro</button>
@@ -576,7 +566,7 @@ export default function App() {
                     {allUsers.map(u => (
                       <div key={u.badge_id} onClick={() => { setEditingUser(u); setUserFormData(u); setIsUserEditModalOpen(true); }} className="p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex items-center gap-4 cursor-pointer hover:border-brand-500/30 transition-all">
                         <div className="w-10 h-10 rounded-lg bg-slate-200 dark:bg-slate-800 overflow-hidden flex-shrink-0">
-                          {u.photo_url ? <img src={u.photo_url} className="w-full h-full object-cover" /> : <UserIcon className="m-auto mt-2 text-slate-400" size={16}/>}
+                          {u.photo_url ? <img src={u.photo_url} className="w-full h-full object-cover" /> : <User className="m-auto mt-2 text-slate-400" size={16}/>}
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="font-black text-[10px] uppercase truncate text-slate-900 dark:text-white">{u.name}</p>
@@ -634,7 +624,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Floating Tools para Estoque */}
         {currentView === AppView.INVENTORY && (
            <div className="fixed bottom-6 right-6 flex flex-col gap-3 z-40">
              <button onClick={() => setIsImportHelpOpen(true)} className="w-12 h-12 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center shadow-2xl transition-all active:scale-90 border border-slate-700/50"><Info size={18}/></button>
@@ -647,7 +636,6 @@ export default function App() {
         )}
       </main>
 
-      {/* MODAL AJUDA IMPORTAÇÃO */}
       {isImportHelpOpen && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in duration-300">
           <div className="rounded-3xl w-full max-w-sm p-8 border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl text-center">
@@ -665,7 +653,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL USUÁRIO */}
       {isUserEditModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
           <div className="rounded-2xl w-full max-w-sm overflow-hidden flex flex-col border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl">
@@ -676,7 +663,7 @@ export default function App() {
             <form onSubmit={handleSaveUser} className="p-6 space-y-5">
               <div className="flex flex-col items-center gap-4">
                 <div className="w-24 h-24 rounded-2xl bg-slate-100 dark:bg-slate-950 border-2 border-slate-200 dark:border-slate-800 overflow-hidden relative group">
-                  {userFormData.photo_url ? <img src={userFormData.photo_url} className="w-full h-full object-cover" /> : <UserIcon size={32} className="m-auto mt-7 text-slate-300" />}
+                  {userFormData.photo_url ? <img src={userFormData.photo_url} className="w-full h-full object-cover" /> : <User size={32} className="m-auto mt-7 text-slate-300" />}
                   <button type="button" onClick={() => userFileInputRef.current?.click()} className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity"><Camera size={18}/></button>
                 </div>
                 <input type="file" accept="image/*" ref={userFileInputRef} className="hidden" onChange={(e) => handlePhotoUpload(e, 'user')} />
@@ -694,7 +681,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL MATERIAL */}
       {isItemModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in zoom-in duration-300">
           <div className="rounded-3xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl">
@@ -743,7 +729,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL MOVIMENTAÇÃO */}
       {isMovementModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in">
            <div className="rounded-3xl w-full max-w-[300px] overflow-hidden border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl">
@@ -766,7 +751,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Estilo Global Adicional */}
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
