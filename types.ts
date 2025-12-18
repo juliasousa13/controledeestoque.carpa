@@ -10,8 +10,8 @@ export interface InventoryItem {
   department: string;
   photoUrl?: string;
   lastUpdated: string;
-  lastUpdatedBy: string; // Nome do colaborador
-  lastUpdatedByBadge: string; // Matrícula do colaborador
+  lastUpdatedBy: string;
+  lastUpdatedByBadge: string;
 }
 
 export interface MovementLog {
@@ -30,6 +30,7 @@ export interface UserProfile {
   badgeId: string;
   name: string;
   role: 'admin' | 'staff';
+  photoUrl?: string;
   createdAt: string;
 }
 
@@ -37,20 +38,19 @@ export interface UserSession {
   badgeId: string;
   name: string;
   role: 'admin' | 'staff';
+  photoUrl?: string;
 }
 
 export enum AppView {
   DASHBOARD = 'DASHBOARD',
   INVENTORY = 'INVENTORY',
   MOVEMENTS = 'MOVEMENTS',
-  USERS = 'USERS'
+  USERS = 'CONFIGURAÇÕES'
 }
-
-export type SyncActionType = 'UPDATE_ITEM' | 'DELETE_ITEM' | 'ADD_MOVEMENT' | 'REGISTER_USER';
 
 export interface PendingAction {
   id: string;
-  type: SyncActionType;
+  type: string;
   payload: any;
   timestamp: number;
 }
