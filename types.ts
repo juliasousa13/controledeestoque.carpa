@@ -6,20 +6,19 @@ export interface InventoryItem {
   unit: string;
   minStock: number;
   currentStock: number;
-  price: number; // Preço unitário para cálculo de valor de estoque
   location: string;
   department: string;
-  category: string; // Categoria do item (Ex: Consumível, Ativo, Ferramenta)
   photoUrl?: string;
   lastUpdated: string;
-  lastUpdatedBy?: string;
+  lastUpdatedBy: string; // Nome do colaborador
+  lastUpdatedByBadge: string; // Matrícula do colaborador
 }
 
 export interface MovementLog {
   id: string;
   itemId: string;
   itemName: string;
-  type: 'IN' | 'OUT';
+  type: 'IN' | 'OUT' | 'CREATE' | 'EDIT' | 'DELETE';
   quantity: number;
   userBadgeId: string;
   userName: string;
@@ -44,10 +43,10 @@ export enum AppView {
   DASHBOARD = 'DASHBOARD',
   INVENTORY = 'INVENTORY',
   MOVEMENTS = 'MOVEMENTS',
-  SETTINGS = 'SETTINGS',
+  USERS = 'USERS'
 }
 
-export type SyncActionType = 'ADD_ITEM' | 'UPDATE_ITEM' | 'DELETE_ITEM' | 'ADD_MOVEMENT' | 'ADD_USER' | 'ADD_DEPT' | 'DELETE_DEPT';
+export type SyncActionType = 'UPDATE_ITEM' | 'DELETE_ITEM' | 'ADD_MOVEMENT' | 'REGISTER_USER';
 
 export interface PendingAction {
   id: string;
