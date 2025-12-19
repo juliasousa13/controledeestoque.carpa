@@ -7,7 +7,8 @@ import {
   Upload, CheckCircle2, User as UserIcon, LogOut, ChevronRight,
   Info, Check, Database, ShieldCheck, Settings, Download, Filter,
   Sparkles, BrainCircuit, ListChecks, UserPlus, Zap, Globe, Signal, SignalLow,
-  PieChart, BarChart3, DatabaseZap, Clock, ShieldAlert, CheckSquare, Square, Image as ImageIcon
+  PieChart, BarChart3, DatabaseZap, Clock, ShieldAlert, CheckSquare, Square, Image as ImageIcon,
+  Wifi, WifiOff
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction } from './types';
 import { Logo } from './components/Logo';
@@ -33,8 +34,11 @@ export default function App() {
   // App Logic States
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState<Date | null>(null);
-  const [connStatus, setConnStatus] = useState<'online' | 'offline' | 'syncing'>('online');
+  const [lastSync, setLastSync] = useState<Date | null>(() => {
+    const saved = localStorage.getItem('carpa_last_sync');
+    return saved ? new Date(saved) : null;
+  });
+  const [connStatus, setConnStatus] = useState<'online' | 'offline' | 'syncing'>(navigator.onLine ? 'online' : 'offline');
   const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -64,36 +68,60 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const userPhotoInputRef = useRef<HTMLInputElement>(null);
 
-  // --- Effects & Sync ---
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', darkMode);
-    localStorage.setItem('carpa_theme', darkMode ? 'dark' : 'light');
-  }, [darkMode]);
+  // --- Sync Logic ---
 
   const processSyncQueue = useCallback(async () => {
-    if (!navigator.onLine) return;
+    if (!navigator.onLine) {
+      setConnStatus('offline');
+      return;
+    }
+    
     const queue = getSyncQueue();
-    if (queue.length === 0) return;
+    if (queue.length === 0) {
+      setConnStatus('online');
+      return;
+    }
     
     setConnStatus('syncing');
     for (const action of queue) {
       try {
-        if (action.type === 'UPSERT_ITEM') await supabase.from('inventory_items').upsert(action.data);
-        if (action.type === 'INSERT_MOVEMENT') await supabase.from('movements').insert(action.data);
-        if (action.type === 'DELETE_ITEM') await supabase.from('inventory_items').update({ is_active: false }).eq('id', action.data.id);
-        if (action.type === 'UPDATE_USER') await supabase.from('users').upsert(action.data);
+        let error = null;
+        if (action.type === 'UPSERT_ITEM') {
+          const { error: err } = await supabase.from('inventory_items').upsert(action.data);
+          error = err;
+        } else if (action.type === 'INSERT_MOVEMENT') {
+          const { error: err } = await supabase.from('movements').insert(action.data);
+          error = err;
+        } else if (action.type === 'DELETE_ITEM') {
+          const { error: err } = await supabase.from('inventory_items').update({ is_active: false }).eq('id', action.data.id);
+          error = err;
+        } else if (action.type === 'UPDATE_USER') {
+          const { error: err } = await supabase.from('users').upsert(action.data);
+          error = err;
+        }
+        
+        if (error) throw error;
         removeFromQueue(action.id);
       } catch (e) {
-        console.error("Sync item failed, will retry later", e);
-        break; 
+        console.error("Sync failed for action:", action.id, e);
+        setConnStatus('offline');
+        return; // Stop processing and retry later
       }
     }
     setConnStatus('online');
+    setLastSync(new Date());
+    localStorage.setItem('carpa_last_sync', new Date().toISOString());
   }, []);
 
   const fetchData = useCallback(async (showLoader = true) => {
     if (showLoader) setIsSyncing(true);
+    if (!navigator.onLine) {
+      setConnStatus('offline');
+      setIsLoading(false);
+      setIsSyncing(false);
+      return;
+    }
+
     try {
       const [itRes, movRes, userRes] = await Promise.all([
         supabase.from('inventory_items').select('*').eq('is_active', true).order('name'),
@@ -101,7 +129,7 @@ export default function App() {
         supabase.from('users').select('*').order('name')
       ]);
 
-      if (itRes.error || movRes.error || userRes.error) throw new Error();
+      if (itRes.error || movRes.error || userRes.error) throw new Error("Erro ao buscar dados do Supabase");
 
       const newItems = itRes.data || [];
       const newMovs = movRes.data || [];
@@ -110,11 +138,16 @@ export default function App() {
       setItems(newItems);
       setMovements(newMovs);
       setAllUsers(newUsers);
+      
       saveOfflineData(newItems, newMovs, newUsers, Array.from(new Set(newItems.map(i => i.department))));
       setLastSync(new Date());
+      localStorage.setItem('carpa_last_sync', new Date().toISOString());
       setConnStatus('online');
+      
+      // Tentar processar fila após sucesso na busca
       await processSyncQueue();
-    } catch {
+    } catch (err) {
+      console.error("Fetch data error:", err);
       setConnStatus('offline');
     } finally {
       setIsLoading(false);
@@ -122,9 +155,27 @@ export default function App() {
     }
   }, [processSyncQueue]);
 
+  // --- Listeners & Lifecycles ---
+
   useEffect(() => {
-    fetchData();
-    const channel = supabase.channel('realtime-prod')
+    document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('carpa_theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setConnStatus('online');
+      fetchData(false);
+    };
+    const handleOffline = () => setConnStatus('offline');
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Initial fetch
+    fetchData(true);
+
+    const channel = supabase.channel('carpa-realtime')
       .on('postgres_changes', { event: '*', table: 'inventory_items', schema: 'public' }, () => fetchData(false))
       .on('postgres_changes', { event: '*', table: 'movements', schema: 'public' }, () => fetchData(false))
       .on('postgres_changes', { event: '*', table: 'users', schema: 'public' }, () => fetchData(false))
@@ -132,9 +183,11 @@ export default function App() {
 
     const interval = setInterval(() => {
       if (navigator.onLine) processSyncQueue();
-    }, 30000);
+    }, 60000); // 1 minute auto-sync
 
     return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       supabase.removeChannel(channel);
       clearInterval(interval);
     };
@@ -143,13 +196,14 @@ export default function App() {
   // --- Computed States ---
 
   const stats = useMemo(() => {
+    if (items.length === 0) return { critical: 0, ideal: 0, surplus: 0, critPct: 0, idealPct: 0, surpPct: 0 };
     let critical = 0, ideal = 0, surplus = 0;
     items.forEach(i => {
       if (i.current_stock <= i.min_stock) critical++;
       else if (i.current_stock <= i.min_stock * 2) ideal++;
       else surplus++;
     });
-    const total = items.length || 1;
+    const total = items.length;
     return { 
       critical, ideal, surplus,
       critPct: (critical / total) * 100,
@@ -458,13 +512,13 @@ export default function App() {
       <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-[3rem] p-12 shadow-2xl border border-slate-200 dark:border-slate-800 text-center animate-in zoom-in duration-300">
         <Logo className="w-20 h-20 mx-auto mb-8" />
         <h1 className="text-3xl font-black tracking-tighter mb-2">AG SYSTEM</h1>
-        <p className="text-[10px] font-black text-brand-500 uppercase tracking-widest mb-10">Identificação de Colaborador</p>
+        <p className="text-[10px] font-black text-brand-500 uppercase tracking-widest mb-10">Gestão Profissional de Estoque</p>
         
         <form onSubmit={handleInitialLogin} className="space-y-6">
           {loginStep === 'BADGE' ? (
             <div className="space-y-4">
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nº Matrícula</label>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nº Matrícula / ID</label>
                 <input 
                   autoFocus
                   required
@@ -508,7 +562,7 @@ export default function App() {
       <Logo className="w-16 h-16 animate-pulse" />
       <div className="mt-8 flex flex-col items-center gap-2">
         <Loader2 className="animate-spin text-brand-600" size={32} />
-        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Carregando Banco de Dados...</span>
+        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Sincronizando Banco Central...</span>
       </div>
     </div>
   );
@@ -529,11 +583,11 @@ export default function App() {
 
           <nav className="flex-1 space-y-2">
             {[
-              { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Resumo Geral' },
-              { id: AppView.INVENTORY, icon: Package, label: 'Inventário Ativo' },
-              { id: AppView.MOVEMENTS, icon: History, label: 'Auditoria & Logs' },
-              { id: AppView.USERS, icon: Users, label: 'Equipe Ativa' },
-              { id: AppView.SETTINGS, icon: Globe, label: 'Rede & Configs' }
+              { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Dashboard' },
+              { id: AppView.INVENTORY, icon: Package, label: 'Inventário' },
+              { id: AppView.MOVEMENTS, icon: History, label: 'Auditoria' },
+              { id: AppView.USERS, icon: Users, label: 'Colaboradores' },
+              { id: AppView.SETTINGS, icon: Globe, label: 'Sincronismo' }
             ].map(v => (
               <button key={v.id} onClick={() => { setCurrentView(v.id); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold text-[11px] uppercase tracking-wider transition-all ${currentView === v.id ? 'bg-brand-600 text-white shadow-xl translate-x-1' : 'text-slate-400 hover:bg-brand-500/10 hover:text-brand-500'}`}>
@@ -544,18 +598,25 @@ export default function App() {
 
           <div className="mt-auto pt-8 border-t border-slate-200 dark:border-slate-800">
             <div className="mb-6 p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className={`w-2.5 h-2.5 rounded-full ${connStatus === 'online' ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : connStatus === 'syncing' ? 'bg-brand-500 animate-pulse' : 'bg-red-500'}`} />
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">{connStatus === 'online' ? 'Sincronizado' : connStatus === 'syncing' ? 'Enviando...' : 'Offline'}</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                   <div className={`w-2.5 h-2.5 rounded-full ${connStatus === 'online' ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : connStatus === 'syncing' ? 'bg-brand-500 animate-pulse' : 'bg-red-500'}`} />
+                   <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">{connStatus === 'online' ? 'Conectado' : connStatus === 'syncing' ? 'Sincronizando' : 'Modo Offline'}</span>
+                </div>
+                {connStatus === 'online' ? <Wifi size={14} className="text-emerald-500"/> : <WifiOff size={14} className="text-red-500"/>}
               </div>
+              {lastSync && (
+                <p className="text-[7px] font-black uppercase text-slate-400 mt-2 tracking-tighter">Última atualização: {lastSync.toLocaleTimeString()}</p>
+              )}
             </div>
+            
             <div className="flex items-center gap-4 p-3 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-800 mb-4 shadow-sm">
               <div className="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center text-white font-black text-lg shadow-lg overflow-hidden">
                 {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover" /> : user.name.charAt(0)}
               </div>
               <div className="truncate">
                 <p className="text-[11px] font-black uppercase truncate">{user.name}</p>
-                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">MAT: {user.badgeId}</p>
+                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">ID: {user.badgeId}</p>
               </div>
             </div>
             <div className="flex gap-2">
@@ -567,6 +628,13 @@ export default function App() {
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        {/* Banner de Offline se necessário */}
+        {connStatus === 'offline' && (
+          <div className="bg-red-500 text-white text-[9px] font-black uppercase py-1 text-center tracking-[0.2em] animate-pulse z-[60]">
+            Você está operando offline. As alterações serão salvas localmente e sincronizadas ao reconectar.
+          </div>
+        )}
+
         <header className="h-16 flex items-center justify-between px-8 border-b border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-[#020617]/60 backdrop-blur-xl sticky top-0 z-30">
           <div className="flex items-center gap-6">
             <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 text-slate-500"><Menu/></button>
@@ -602,24 +670,24 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl group hover:border-brand-500 transition-all">
                     <div className="w-14 h-14 rounded-2xl bg-brand-500/10 flex items-center justify-center text-brand-500 mb-6 group-hover:scale-110 transition-transform"><Box size={28}/></div>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">SKUs Ativos</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Materiais Ativos</p>
                     <h3 className="text-5xl font-black tracking-tighter">{items.length}</h3>
                   </div>
                   <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl group hover:border-red-500 transition-all">
                     <div className="w-14 h-14 rounded-2xl bg-red-500/10 flex items-center justify-center text-red-500 mb-6 group-hover:animate-bounce"><AlertTriangle size={28}/></div>
-                    <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-1">Estoque Crítico</p>
+                    <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-1">Reposição Crítica</p>
                     <h3 className="text-5xl font-black text-red-600 tracking-tighter">{stats.critical}</h3>
                   </div>
                   <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl group hover:border-emerald-500 transition-all">
                     <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-500 mb-6"><Activity size={28}/></div>
-                    <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Movimentações</p>
-                    <h3 className="text-5xl font-black text-emerald-600 tracking-tighter">{movements.length}</h3>
+                    <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Logs do Dia</p>
+                    <h3 className="text-5xl font-black text-emerald-600 tracking-tighter">{movements.filter(m => new Date(m.timestamp).toDateString() === new Date().toDateString()).length}</h3>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <div className="p-12 rounded-[4rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                    <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-3"><PieChart size={20} className="text-brand-500"/> Saúde do Inventário</h4>
+                    <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-3"><PieChart size={20} className="text-brand-500"/> Visão de Saúde</h4>
                     <div className="flex flex-col md:flex-row items-center gap-12">
                       <div className="relative w-48 h-48">
                         <svg viewBox="0 0 100 100" className="w-full h-full transform -rotate-90">
@@ -629,39 +697,53 @@ export default function App() {
                           <circle cx="50" cy="50" r="40" fill="transparent" stroke="#3b82f6" strokeWidth="12" strokeDasharray={`${stats.surpPct * 2.51} 251.2`} strokeDashoffset={`-${(stats.critPct + stats.idealPct) * 2.51}`} />
                         </svg>
                         <div className="absolute inset-0 flex flex-col items-center justify-center text-center transform rotate-90">
-                          <span className="text-2xl font-black tracking-tighter">{Math.round((stats.ideal + stats.surplus) / (items.length || 1) * 100)}%</span>
-                          <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Estável</span>
+                          <span className="text-2xl font-black tracking-tighter">{items.length > 0 ? Math.round((stats.ideal + stats.surplus) / items.length * 100) : 0}%</span>
+                          <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Saudável</span>
                         </div>
                       </div>
                       <div className="space-y-4 flex-1">
-                        <div className="flex justify-between items-center p-4 bg-red-50 dark:bg-red-950/20 rounded-2xl">
-                          <span className="text-[10px] font-black text-red-600 uppercase tracking-widest">Abaixo do Mínimo</span>
+                        <div className="flex justify-between items-center p-4 bg-red-50 dark:bg-red-950/20 rounded-2xl border border-red-100 dark:border-red-900/30">
+                          <span className="text-[10px] font-black text-red-600 uppercase tracking-widest">Crítico</span>
                           <span className="text-lg font-black text-red-600">{stats.critical}</span>
                         </div>
-                        <div className="flex justify-between items-center p-4 bg-emerald-50 dark:bg-emerald-950/20 rounded-2xl">
-                          <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Nível Ideal</span>
+                        <div className="flex justify-between items-center p-4 bg-emerald-50 dark:bg-emerald-950/20 rounded-2xl border border-emerald-100 dark:border-emerald-900/30">
+                          <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Ideal</span>
                           <span className="text-lg font-black text-emerald-600">{stats.ideal}</span>
                         </div>
-                        <div className="flex justify-between items-center p-4 bg-brand-50 dark:bg-brand-950/20 rounded-2xl">
-                          <span className="text-[10px] font-black text-brand-600 uppercase tracking-widest">Acima do Mínimo</span>
+                        <div className="flex justify-between items-center p-4 bg-brand-50 dark:bg-brand-950/20 rounded-2xl border border-brand-100 dark:border-brand-900/30">
+                          <span className="text-[10px] font-black text-brand-600 uppercase tracking-widest">Surplus</span>
                           <span className="text-lg font-black text-brand-600">{stats.surplus}</span>
                         </div>
                       </div>
                     </div>
                   </div>
-                  <div className="p-12 rounded-[4rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                    <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-3"><BarChart3 size={20} className="text-brand-500"/> Auditoria Recente</h4>
-                    <div className="space-y-4 max-h-[250px] overflow-y-auto pr-4 custom-scrollbar">
-                      {movements.slice(0, 6).map(m => (
-                        <div key={m.id} className="flex items-center gap-5 p-4 rounded-3xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800 hover:border-brand-500 transition-all">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-[10px] shadow-sm ${m.type === 'IN' ? 'bg-emerald-500/10 text-emerald-500' : m.type === 'OUT' ? 'bg-orange-500/10 text-orange-500' : 'bg-brand-500/10 text-brand-500'}`}>{m.type}</div>
+                  <div className="p-12 rounded-[4rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden">
+                    <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-3"><BarChart3 size={20} className="text-brand-500"/> Últimos Registros</h4>
+                    <div className="space-y-4 max-h-[300px] overflow-y-auto pr-4 custom-scrollbar">
+                      {movements.slice(0, 8).map(m => (
+                        <div key={m.id} className="flex items-center gap-5 p-4 rounded-3xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800 hover:border-brand-500 transition-all group">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-[10px] shadow-sm ${
+                            m.type === 'IN' ? 'bg-emerald-500/10 text-emerald-500' : 
+                            m.type === 'OUT' ? 'bg-orange-500/10 text-orange-500' : 
+                            'bg-brand-500/10 text-brand-500'
+                          }`}>
+                            {m.type === 'IN' ? '+' : m.type === 'OUT' ? '-' : '•'}
+                          </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-[11px] font-black uppercase truncate">{m.item_name}</p>
                             <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{m.user_name} • {new Date(m.timestamp).toLocaleTimeString()}</p>
                           </div>
-                          <span className={`text-lg font-black tracking-tighter ${m.type === 'IN' ? 'text-emerald-500' : 'text-orange-500'}`}>{m.type === 'IN' ? '+' : '-'}{m.quantity}</span>
+                          <span className={`text-lg font-black tracking-tighter ${m.type === 'IN' ? 'text-emerald-500' : m.type === 'OUT' ? 'text-orange-500' : 'text-slate-400'}`}>
+                            {m.type === 'IN' ? '+' : m.type === 'OUT' ? '-' : ''}{m.quantity || 0}
+                          </span>
                         </div>
                       ))}
+                      {movements.length === 0 && (
+                        <div className="flex flex-col items-center justify-center py-20 opacity-20">
+                          <History size={48} />
+                          <p className="text-[9px] font-black uppercase mt-4">Nenhum registro</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -722,17 +804,11 @@ export default function App() {
                       </div>
                     </div>
                   ))}
-                  {filteredItems.length === 0 && (
-                    <div className="col-span-full py-20 flex flex-col items-center justify-center opacity-30 text-center">
-                      <Box size={64} className="mb-4" />
-                      <p className="text-xs font-black uppercase tracking-widest">Nenhum item encontrado no inventário ativo</p>
-                    </div>
-                  )}
                 </div>
               </div>
             )}
 
-            {/* VIEW: MOVEMENTS */}
+            {/* VIEW: AUDITORIA */}
             {currentView === AppView.MOVEMENTS && (
               <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-10">
                 <div className="flex items-center justify-between mb-8">
@@ -740,11 +816,11 @@ export default function App() {
                     <div className="p-4 bg-brand-600 rounded-3xl text-white shadow-xl shadow-brand-500/20"><History size={24}/></div>
                     <div>
                       <h3 className="text-lg font-black tracking-tighter">Histórico de Auditoria</h3>
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Logs Imutáveis de Movimentação</p>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Logs Imutáveis para Auditoria Profissional</p>
                     </div>
                   </div>
                   <button onClick={handleExport} className="flex items-center gap-3 px-6 py-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-black text-[10px] uppercase tracking-widest hover:border-brand-500 transition-all shadow-sm">
-                    <Download size={18}/> Exportar Log
+                    <Download size={18}/> Exportar Log (.xlsx)
                   </button>
                 </div>
                 <div className="space-y-4">
@@ -765,7 +841,6 @@ export default function App() {
                             <span className="flex items-center gap-1 text-[8px] font-black text-brand-500 uppercase tracking-widest"><UserIcon size={12}/> {m.user_name}</span>
                             <span className="flex items-center gap-1 text-[8px] font-bold text-slate-400 uppercase tracking-widest"><Clock size={12}/> {new Date(m.timestamp).toLocaleString()}</span>
                           </div>
-                          {m.reason && <p className="text-[8px] font-black text-slate-400 uppercase mt-2 italic truncate">Obs: {m.reason}</p>}
                         </div>
                       </div>
                       <div className="text-right pl-6">
@@ -786,8 +861,8 @@ export default function App() {
                 <div className="flex items-center gap-5">
                   <div className="p-4 bg-brand-600 rounded-3xl text-white shadow-xl shadow-brand-500/20"><Users size={24}/></div>
                   <div>
-                    <h3 className="text-lg font-black tracking-tighter">Equipe AG SYSTEM</h3>
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Colaboradores ativos no sistema</p>
+                    <h3 className="text-lg font-black tracking-tighter">Equipe de Auditoria</h3>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Colaboradores ativos no sistema AG</p>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
@@ -813,28 +888,28 @@ export default function App() {
               </div>
             )}
 
-            {/* VIEW: SETTINGS */}
+            {/* VIEW: CONFIGS / SINCRONISMO */}
             {currentView === AppView.SETTINGS && (
               <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-bottom-10">
                 <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><Globe size={24} className="text-brand-600"/> Infraestrutura & Nuvem</h4>
+                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><Globe size={24} className="text-brand-600"/> Gateway & Sincronismo</h4>
                   <div className="space-y-4">
                     <div className="flex justify-between items-center p-6 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Gateway Supabase</span>
-                      <span className={`text-[10px] font-black uppercase ${connStatus === 'online' ? 'text-emerald-500' : 'text-red-500'}`}>{connStatus}</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Status da Rede</span>
+                      <span className={`text-[10px] font-black uppercase ${connStatus === 'online' ? 'text-emerald-500' : connStatus === 'syncing' ? 'text-brand-500' : 'text-red-500'}`}>{connStatus}</span>
                     </div>
                     <div className="flex justify-between items-center p-6 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800">
                       <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Última Escuta Central</span>
-                      <span className="text-[10px] font-black uppercase">{lastSync ? lastSync.toLocaleString() : 'Pendente'}</span>
+                      <span className="text-[10px] font-black uppercase">{lastSync ? lastSync.toLocaleString() : 'Não sincronizado'}</span>
                     </div>
                     <button onClick={() => fetchData(true)} className="w-full py-6 bg-brand-600 text-white rounded-3xl font-black uppercase text-[11px] tracking-widest shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-all">
-                      <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} /> ATUALIZAR AGORA
+                      <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} /> FORÇAR SINCRONISMO AGORA
                     </button>
                   </div>
                 </div>
 
                 <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><FileSpreadsheet size={24} className="text-emerald-600"/> Importação de Lote</h4>
+                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><FileSpreadsheet size={24} className="text-emerald-600"/> Gestão de Dados (Lote)</h4>
                   <div className="grid grid-cols-2 gap-6">
                     <label className="flex flex-col items-center justify-center p-8 bg-emerald-500/5 border-2 border-dashed border-emerald-500/20 rounded-3xl cursor-pointer hover:bg-emerald-500/10 transition-all group">
                       <Upload className="text-emerald-600 mb-4 group-hover:scale-110 transition-transform" size={32}/>
@@ -843,7 +918,7 @@ export default function App() {
                     </label>
                     <button onClick={handleExport} className="flex flex-col items-center justify-center p-8 bg-brand-500/5 border-2 border-dashed border-brand-500/20 rounded-3xl hover:bg-brand-500/10 transition-all group">
                       <Download className="text-brand-600 mb-4 group-hover:scale-110 transition-transform" size={32}/>
-                      <span className="text-[9px] font-black uppercase tracking-widest text-brand-700">Baixar Inventário</span>
+                      <span className="text-[9px] font-black uppercase tracking-widest text-brand-700">Exportar Atual</span>
                     </button>
                   </div>
                 </div>
@@ -859,14 +934,14 @@ export default function App() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md animate-in zoom-in duration-300">
           <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
             <div className="p-10 bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-              <h3 className="text-sm font-black uppercase tracking-widest text-brand-600">Ficha do Material</h3>
+              <h3 className="text-sm font-black uppercase tracking-widest text-brand-600">Ficha Técnica</h3>
               <div className="flex gap-2">
                 {editingItem && (
                    <button 
                     type="button"
                     onClick={() => handleDeleteItem(editingItem.id)}
                     className="p-2 text-red-500 hover:bg-red-500/10 rounded-xl transition-all"
-                    title="Excluir Permanentemente"
+                    title="Remover Registro"
                   >
                     <Trash2 size={24}/>
                   </button>
@@ -885,7 +960,7 @@ export default function App() {
                   ) : (
                     <>
                       <Camera className="text-slate-300 mb-2" size={32} />
-                      <span className="text-[8px] font-black uppercase text-slate-400">Capturar Foto</span>
+                      <span className="text-[8px] font-black uppercase text-slate-400">Capturar</span>
                     </>
                   )}
                   <div className="absolute inset-0 bg-brand-600/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -908,18 +983,18 @@ export default function App() {
                   }} 
                 />
                 <div className="flex-1 space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Descrição</label>
-                  <input required value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="NOME DO MATERIAL" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Descrição do Material</label>
+                  <input required value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="EX: CIMENTO CP II" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Setor</label>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Centro de Custo / Setor</label>
                   <input required value={formData.department || ''} onChange={e => setFormData({ ...formData, department: e.target.value })} placeholder="EX: CIVIL" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Localização</label>
-                  <input required value={formData.location || ''} onChange={e => setFormData({ ...formData, location: e.target.value })} placeholder="EX: BOX A-01" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Endereçamento (Local)</label>
+                  <input required value={formData.location || ''} onChange={e => setFormData({ ...formData, location: e.target.value })} placeholder="EX: ALMOX-01" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4">
@@ -936,7 +1011,7 @@ export default function App() {
                   <input value={formData.unit || 'UND'} onChange={e => setFormData({ ...formData, unit: e.target.value.toUpperCase() })} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-center shadow-inner dark:text-white outline-none" />
                 </div>
               </div>
-              <button type="submit" className="w-full py-7 bg-brand-600 text-white rounded-[2rem] font-black uppercase text-xs tracking-widest hover:scale-105 transition-all shadow-xl shadow-brand-500/20">SALVAR FICHA TÉCNICA</button>
+              <button type="submit" className="w-full py-7 bg-brand-600 text-white rounded-[2rem] font-black uppercase text-xs tracking-widest hover:scale-105 transition-all shadow-xl shadow-brand-500/20">SALVAR REGISTRO</button>
             </form>
           </div>
         </div>
@@ -1003,14 +1078,14 @@ export default function App() {
                 disabled={!!editingUser}
                 value={userFormData.badge_id || ''} 
                 onChange={e => setUserFormData({ ...userFormData, badge_id: e.target.value })}
-                placeholder="Nº MATRÍCULA" 
+                placeholder="ID / MATRÍCULA" 
                 className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black outline-none border-2 border-transparent focus:border-brand-500 shadow-inner dark:text-white disabled:opacity-50" 
               />
               <input 
                 required 
                 value={userFormData.name || ''} 
                 onChange={e => setUserFormData({ ...userFormData, name: e.target.value })}
-                placeholder="NOME COMPLETO" 
+                placeholder="NOME DO COLABORADOR" 
                 className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black outline-none border-2 border-transparent focus:border-brand-500 shadow-inner uppercase dark:text-white" 
               />
               <select 
@@ -1020,8 +1095,8 @@ export default function App() {
               >
                 <option value="Colaborador">Colaborador</option>
                 <option value="Estoquista">Estoquista</option>
-                <option value="Gerente">Gerente</option>
                 <option value="Supervisor">Supervisor</option>
+                <option value="Gerente">Gerente</option>
                 <option value="Técnico">Técnico</option>
               </select>
               <button className="w-full py-5 bg-brand-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl mt-4 active:scale-95 transition-all">SALVAR ALTERAÇÕES</button>
