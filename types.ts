@@ -14,6 +14,12 @@ export interface InventoryItem {
   is_active?: boolean; // Para exclusão lógica conforme solicitado
 }
 
+export interface Department {
+  id: string;
+  name: string;
+  created_at?: string;
+}
+
 export interface MovementLog {
   id: string;
   item_id: string;
@@ -52,8 +58,8 @@ export enum AppView {
 
 export interface PendingAction {
   id: string;
-  type: 'UPSERT_ITEM' | 'INSERT_MOVEMENT' | 'UPDATE_USER' | 'DELETE_ITEM';
-  table: 'inventory_items' | 'movements' | 'users';
+  type: 'UPSERT_ITEM' | 'INSERT_MOVEMENT' | 'UPDATE_USER' | 'DELETE_ITEM' | 'UPSERT_DEPT';
+  table: 'inventory_items' | 'movements' | 'users' | 'departments';
   data: any;
   timestamp: number;
 }
