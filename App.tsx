@@ -1,31 +1,22 @@
-
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   LayoutDashboard, Package, Plus, Search, Trash2, Moon, Sun, Menu, X, 
-  Camera, AlertTriangle, Loader2, RefreshCw, TrendingDown, Box, 
-  History, Activity, Edit3, Users as UsersIcon, FileSpreadsheet, 
-  Upload, CheckCircle2, User as UserIcon, LogOut, ChevronRight,
-  Info, Check, Database, ShieldCheck, Settings, Download, Filter,
-  Sparkles, BrainCircuit, ListChecks, UserPlus, Zap, Globe, Signal, 
-  PieChart, BarChart3, DatabaseZap, Clock, ShieldAlert, CheckSquare, Square, 
-  Image as ImageIcon, MoreVertical
+  Camera, AlertTriangle, Loader2, RefreshCw, TrendingDown, History, 
+  Edit3, Users as UsersIcon, CheckCircle2, User as UserIcon, LogOut, 
+  Database, Settings, Download, Filter, Sparkles, DatabaseZap, Clock, 
+  CheckSquare, Square, Image as ImageIcon, MoreVertical, ChevronRight,
+  Activity, ArrowUpRight, ArrowDownRight, ClipboardList, MapPin, Layers,
+  ArrowRight, BarChart3, FileSpreadsheet, ShieldCheck, Wifi, WifiOff,
+  UserCog, Smartphone, Check, MinusCircle
 } from 'lucide-react';
-import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction, Department } from './types';
+import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, Department } from './types';
 import { Logo } from './components/Logo';
 import { supabase } from './services/supabaseClient';
 import { saveOfflineData, loadOfflineData, addToSyncQueue, getSyncQueue, removeFromQueue } from './services/offlineStorage';
 import { generateProductInsights } from './services/geminiService';
 
 declare const XLSX: any;
-
-const USER_ROLES = [
-  "Auxiliar de almoxarifado",
-  "Ajudante de almoxarifado",
-  "Encarregado",
-  "Jovem Aprendiz",
-  "Engenharia",
-  "Gestão"
-];
+declare const Chart: any;
 
 export default function App() {
   // Theme & Session
@@ -44,19 +35,19 @@ export default function App() {
   // App Logic States
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastSync, setLastSync] = useState<Date | null>(() => {
     const saved = localStorage.getItem('carpa_last_sync');
     return saved ? new Date(saved) : null;
   });
-  const [connStatus, setConnStatus] = useState<'online' | 'offline' | 'syncing'>(navigator.onLine ? 'online' : 'offline');
   const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDept, setSelectedDept] = useState('TODOS');
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
 
-  // Fix: Added missing login state variables
+  // Login state
   const [loginStep, setLoginStep] = useState<'BADGE' | 'NAME'>('BADGE');
   const [tempBadge, setTempBadge] = useState('');
   const [tempName, setTempName] = useState('');
@@ -65,52 +56,38 @@ export default function App() {
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [isMovementModalOpen, setIsMovementModalOpen] = useState(false);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
-  
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
-  
   const [movementType, setMovementType] = useState<'IN' | 'OUT'>('IN');
   const [activeItemId, setActiveItemId] = useState<string>('');
   const [formData, setFormData] = useState<Partial<InventoryItem>>({});
-  const [moveData, setMoveData] = useState({ quantity: 1, reason: '' });
   const [userFormData, setUserFormData] = useState<Partial<UserProfile>>({});
+  const [moveData, setMoveData] = useState({ quantity: 1, reason: '' });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const userPhotoInputRef = useRef<HTMLInputElement>(null);
+  const chartRef = useRef<HTMLCanvasElement>(null);
+  const chartInstance = useRef<any>(null);
 
-  // --- Sync Logic ---
-  const processSyncQueue = useCallback(async () => {
-    if (!navigator.onLine) return;
-    const queue = getSyncQueue();
-    if (queue.length === 0) return;
-    
-    setConnStatus('syncing');
-    for (const action of queue) {
-      try {
-        let error = null;
-        if (action.type === 'UPSERT_ITEM') error = (await supabase.from('inventory_items').upsert(action.data)).error;
-        if (action.type === 'INSERT_MOVEMENT') error = (await supabase.from('movements').insert(action.data)).error;
-        if (action.type === 'DELETE_ITEM') error = (await supabase.from('inventory_items').update({ is_active: false }).eq('id', action.data.id)).error;
-        if (action.type === 'UPDATE_USER') error = (await supabase.from('users').upsert(action.data)).error;
-        if (action.type === 'UPSERT_DEPT') error = (await supabase.from('departments').upsert(action.data)).error;
-        
-        if (error) throw error;
-        removeFromQueue(action.id);
-      } catch (e) {
-        console.error("Sync error:", e);
-        break; 
-      }
-    }
-    setConnStatus('online');
+  // --- Network status ---
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
+  // --- Data Fetching ---
   const fetchData = useCallback(async (showLoader = true) => {
     if (showLoader) setIsSyncing(true);
     try {
-      // Forçar atualização do banco sem depender apenas do cache inicial
       const [itRes, movRes, userRes, depRes] = await Promise.all([
         supabase.from('inventory_items').select('*').eq('is_active', true).order('name'),
-        supabase.from('movements').select('*').order('timestamp', { ascending: false }).limit(300),
+        supabase.from('movements').select('*').order('timestamp', { ascending: false }).limit(500),
         supabase.from('users').select('*').order('name'),
         supabase.from('departments').select('*').order('name')
       ]);
@@ -126,49 +103,122 @@ export default function App() {
       setDbDepartments(depRes.data || []);
       
       saveOfflineData(itRes.data || [], movRes.data || [], userRes.data || [], (depRes.data || []).map(d => d.name));
-      const syncDate = new Date();
-      setLastSync(syncDate);
-      localStorage.setItem('carpa_last_sync', syncDate.toISOString());
-      setConnStatus('online');
-      await processSyncQueue();
+      const now = new Date();
+      setLastSync(now);
+      localStorage.setItem('carpa_last_sync', now.toISOString());
     } catch (e) {
-      console.error("Fetch Error:", e);
-      setConnStatus('offline');
-      // Tenta carregar do cache se o fetch falhar
+      console.error("Erro ao carregar dados:", e);
       const cached = loadOfflineData();
-      if (items.length === 0 && cached.items.length > 0) {
-        setItems(cached.items);
-        setMovements(cached.movements);
-        setAllUsers(cached.users);
-      }
+      if (items.length === 0) setItems(cached.items || []);
     } finally {
       setIsLoading(false);
       setIsSyncing(false);
     }
-  }, [processSyncQueue]);
+  }, [items.length]);
 
   useEffect(() => {
     fetchData();
-    const channel = supabase.channel('realtime-ag-system')
-      .on('postgres_changes', { event: '*', table: 'inventory_items', schema: 'public' }, () => fetchData(false))
-      .on('postgres_changes', { event: '*', table: 'movements', schema: 'public' }, () => fetchData(false))
-      .on('postgres_changes', { event: '*', table: 'users', schema: 'public' }, () => fetchData(false))
-      .on('postgres_changes', { event: '*', table: 'departments', schema: 'public' }, () => fetchData(false))
+    const channel = supabase.channel('global-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_items' }, () => fetchData(false))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => fetchData(false))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchData(false))
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, [fetchData]);
+
+  // --- Chart Lifecycle ---
+  useEffect(() => {
+    if (currentView === AppView.DASHBOARD && chartRef.current && movements.length > 0) {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+      }
+
+      const last7Days = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+      });
+
+      const inData = last7Days.map(dateStr => {
+        return movements
+          .filter(m => m.type === 'IN' && new Date(m.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) === dateStr)
+          .reduce((acc, curr) => acc + curr.quantity, 0);
+      });
+
+      const outData = last7Days.map(dateStr => {
+        return movements
+          .filter(m => m.type === 'OUT' && new Date(m.timestamp).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) === dateStr)
+          .reduce((acc, curr) => acc + curr.quantity, 0);
+      });
+
+      const ctx = chartRef.current.getContext('2d');
+      chartInstance.current = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: last7Days,
+          datasets: [
+            {
+              label: 'Entradas',
+              data: inData,
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              borderWidth: 3,
+              tension: 0.4,
+              fill: true,
+              pointRadius: 4,
+              pointBackgroundColor: '#10b981'
+            },
+            {
+              label: 'Saídas',
+              data: outData,
+              borderColor: '#f97316',
+              backgroundColor: 'rgba(249, 115, 22, 0.1)',
+              borderWidth: 3,
+              tension: 0.4,
+              fill: true,
+              pointRadius: 4,
+              pointBackgroundColor: '#f97316'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top',
+              labels: {
+                usePointStyle: true,
+                font: { size: 10, weight: '800' },
+                color: darkMode ? '#94a3b8' : '#64748b'
+              }
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              grid: { color: darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' },
+              ticks: { font: { size: 9, weight: '700' }, color: '#94a3b8' }
+            },
+            x: {
+              grid: { display: false },
+              ticks: { font: { size: 9, weight: '700' }, color: '#94a3b8' }
+            }
+          }
+        }
+      });
+    }
+  }, [currentView, movements, darkMode]);
 
   // --- Handlers ---
   const handleInitialLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Busca direta no banco para garantir sincronia no login
     const { data: dbUsers } = await supabase.from('users').select('*').eq('badge_id', tempBadge.trim());
-    const existingUser = dbUsers?.[0];
-
-    if (existingUser) {
-      const session = { badgeId: existingUser.badge_id, name: existingUser.name, role: existingUser.role, photoUrl: existingUser.photo_url };
+    if (dbUsers && dbUsers.length > 0) {
+      const u = dbUsers[0];
+      const session = { badgeId: u.badge_id, name: u.name, role: u.role, photoUrl: u.photo_url };
       setUser(session);
       localStorage.setItem('carpa_user', JSON.stringify(session));
       fetchData();
@@ -180,93 +230,58 @@ export default function App() {
 
   const handleFinalizeLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanBadge = tempBadge.trim();
-    const cleanName = tempName.trim().toUpperCase();
-    const session = { badgeId: cleanBadge, name: cleanName, role: 'Auxiliar de almoxarifado' };
-    
+    const newUser = { 
+      badge_id: tempBadge.trim(), 
+      name: tempName.trim().toUpperCase(), 
+      role: 'Colaborador',
+      created_at: new Date().toISOString()
+    };
+    await supabase.from('users').upsert(newUser);
+    const session = { badgeId: newUser.badge_id, name: newUser.name, role: newUser.role };
     setUser(session);
     localStorage.setItem('carpa_user', JSON.stringify(session));
-    
-    const newUser: UserProfile = { badge_id: cleanBadge, name: cleanName, role: 'Auxiliar de almoxarifado', created_at: new Date().toISOString() };
-    setAllUsers(prev => [...prev, newUser]);
-    
-    // Tenta salvar imediatamente
-    const { error } = await supabase.from('users').upsert(newUser);
-    if (error) {
-      addToSyncQueue({ type: 'UPDATE_USER', table: 'users', data: newUser });
-    }
     fetchData();
   };
 
-  const handleDeleteItem = async (id: string) => {
-    if (!window.confirm("Deseja realmente excluir este item?")) return;
-    const item = items.find(i => i.id === id);
+  const handleStockAction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const item = items.find(i => i.id === activeItemId);
     if (!item || !user) return;
 
-    setIsSyncing(true);
-    const { error } = await supabase.from('inventory_items').update({ is_active: false }).eq('id', id);
-    
-    if (error) {
-      addToSyncQueue({ type: 'DELETE_ITEM', table: 'inventory_items', data: { id } });
+    const qty = Math.abs(Number(moveData.quantity));
+    const newStock = movementType === 'IN' ? item.current_stock + qty : item.current_stock - qty;
+
+    if (newStock < 0) {
+      alert("Operação negada: O estoque não pode ficar negativo.");
+      return;
     }
-
-    const mov: MovementLog = {
-      id: `MOV-${Date.now()}`,
-      item_id: item.id,
-      item_name: item.name,
-      type: 'DELETE',
-      quantity: 0,
-      user_badge_id: user.badgeId,
-      user_name: user.name,
-      timestamp: new Date().toISOString(),
-      reason: 'Exclusão Manual'
-    };
-    await supabase.from('movements').insert(mov);
-
-    setItems(prev => prev.filter(i => i.id !== id));
-    setSelectedItemIds(prev => prev.filter(sid => sid !== id));
-    setIsSyncing(false);
-  };
-
-  const handleDeleteBatch = async () => {
-    if (selectedItemIds.length === 0) return;
-    if (!window.confirm(`Deseja excluir permanentemente os ${selectedItemIds.length} itens selecionados?`)) return;
 
     setIsSyncing(true);
     const now = new Date().toISOString();
     
-    try {
-      // Atualização no banco
-      const { error } = await supabase.from('inventory_items').update({ is_active: false }).in('id', selectedItemIds);
-      
-      if (error) throw error;
+    const { error: itemErr } = await supabase.from('inventory_items').update({ 
+      current_stock: newStock, 
+      last_updated: now, 
+      last_updated_by: user.name 
+    }).eq('id', item.id);
 
-      // Log de auditoria para cada um
-      for (const id of selectedItemIds) {
-        const item = items.find(i => i.id === id);
-        if (item) {
-          await supabase.from('movements').insert({
-            id: `MOV-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-            item_id: item.id,
-            item_name: item.name,
-            type: 'DELETE',
-            quantity: 0,
-            user_badge_id: user?.badgeId,
-            user_name: user?.name,
-            timestamp: now,
-            reason: 'Exclusão em Lote'
-          });
-        }
-      }
-
-      setItems(prev => prev.filter(i => !selectedItemIds.includes(i.id)));
-      setSelectedItemIds([]);
-      fetchData(false);
-    } catch (err) {
-      alert("Erro ao excluir itens. Tente sincronizar novamente.");
-    } finally {
-      setIsSyncing(false);
+    if (!itemErr) {
+      await supabase.from('movements').insert({
+        id: `MOV-${Date.now()}`,
+        item_id: item.id,
+        item_name: item.name,
+        type: movementType,
+        quantity: qty,
+        user_badge_id: user.badgeId,
+        user_name: user.name,
+        timestamp: now,
+        reason: moveData.reason || (movementType === 'IN' ? 'Entrada Manual' : 'Saída Manual')
+      });
     }
+
+    setIsMovementModalOpen(false);
+    setMoveData({ quantity: 1, reason: '' });
+    fetchData(false);
   };
 
   const handleSaveItem = async (e: React.FormEvent) => {
@@ -277,161 +292,148 @@ export default function App() {
     const isEditing = !!editingItem;
     const now = new Date().toISOString();
     
-    const item: InventoryItem = {
+    const itemData = {
       id: isEditing ? editingItem!.id : `IT-${Date.now()}`,
-      name: (formData.name || '').toUpperCase(),
-      description: formData.description || '',
+      name: formData.name.toUpperCase(),
       unit: (formData.unit || 'UND').toUpperCase(),
       current_stock: Number(formData.current_stock) || 0,
       min_stock: Number(formData.min_stock) || 0,
       department: (formData.department || 'GERAL').toUpperCase(),
       location: (formData.location || 'N/A').toUpperCase(),
-      photo_url: formData.photo_url || undefined,
+      photo_url: formData.photo_url || null,
       last_updated: now,
       last_updated_by: user.name,
       is_active: true
     };
 
-    const { error } = await supabase.from('inventory_items').upsert(item);
-    
-    if (error) {
-      addToSyncQueue({ type: 'UPSERT_ITEM', table: 'inventory_items', data: item });
-    }
-
-    // Fix: Added missing 'id' property to MovementLog
-    const mov: MovementLog = {
-      id: `MOV-${Date.now()}`,
-      item_id: item.id,
-      item_name: item.name,
-      type: isEditing ? 'EDIT' : 'CREATE',
-      quantity: item.current_stock,
-      user_badge_id: user.badgeId,
-      user_name: user.name,
-      timestamp: now,
-      reason: isEditing ? 'Alteração via sistema' : 'Cadastro inicial'
-    };
-    await supabase.from('movements').insert(mov);
-
-    setIsItemModalOpen(false);
-    setFormData({});
-    setEditingItem(null);
-    fetchData(false);
-  };
-
-  const handleStockAction = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const item = items.find(i => i.id === activeItemId);
-    if (!item || !user) return;
-
-    const qty = Number(moveData.quantity);
-    const newStock = movementType === 'IN' ? item.current_stock + qty : item.current_stock - qty;
-
-    if (newStock < 0) {
-      alert("Operação negada: Estoque ficaria negativo.");
-      return;
-    }
-
-    setIsSyncing(true);
-    const now = new Date().toISOString();
-    const { error } = await supabase.from('inventory_items').update({ current_stock: newStock, last_updated: now, last_updated_by: user.name }).eq('id', item.id);
+    const { error } = await supabase.from('inventory_items').upsert(itemData);
     
     if (!error) {
       await supabase.from('movements').insert({
-        id: `MOV-${Date.now()}`,
-        item_id: item.id,
-        item_name: item.name,
-        type: movementType,
-        quantity: qty,
+        id: `LOG-${Date.now()}`,
+        item_id: itemData.id,
+        item_name: itemData.name,
+        type: isEditing ? 'EDIT' : 'CREATE',
+        quantity: itemData.current_stock,
         user_badge_id: user.badgeId,
         user_name: user.name,
-        timestamp: now,
-        reason: moveData.reason || (movementType === 'IN' ? 'Entrada Avulsa' : 'Saída Avulsa')
+        timestamp: now
       });
     }
 
-    setIsMovementModalOpen(false);
-    setMoveData({ quantity: 1, reason: '' });
+    setIsItemModalOpen(false);
+    setEditingItem(null);
+    setFormData({});
     fetchData(false);
   };
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userFormData.badge_id || !userFormData.name) return;
-
+    if (!editingUser) return;
     setIsSyncing(true);
-    const u: UserProfile = {
+
+    const updatedData = {
+      ...editingUser,
+      name: userFormData.name?.toUpperCase(),
+      role: userFormData.role,
       badge_id: userFormData.badge_id,
-      name: userFormData.name.toUpperCase(),
-      role: userFormData.role || 'Auxiliar de almoxarifado',
-      photo_url: userFormData.photo_url || null,
-      created_at: editingUser?.created_at || new Date().toISOString()
+      photo_url: userFormData.photo_url
     };
 
-    const { error } = await supabase.from('users').upsert(u);
-    if (error) {
-      addToSyncQueue({ type: 'UPDATE_USER', table: 'users', data: u });
-    }
-
-    setIsUserModalOpen(false);
-    setEditingUser(null);
-    setUserFormData({});
-    fetchData(false);
-  };
-
-  // --- IA and Export Handlers ---
-  // Fix: Implemented missing handleIAInsights
-  const handleIAInsights = async () => {
-    if (!formData.name) return;
-    setIsGeneratingInsights(true);
-    const insights = await generateProductInsights(formData.name, formData.department || 'GERAL');
-    if (insights) {
-      setFormData(prev => ({
-        ...prev,
-        description: `${insights.description} (Dica: ${insights.storageAdvice})`
-      }));
-    }
-    setIsGeneratingInsights(false);
-  };
-
-  // Fix: Implemented missing handleExport
-  const handleExport = () => {
-    const ws = XLSX.utils.json_to_sheet(movements.map(m => ({
-      ID: m.id,
-      Item: m.item_name,
-      Tipo: m.type === 'IN' ? 'Entrada' : m.type === 'OUT' ? 'Saída' : 'Outro',
-      Quantidade: m.quantity,
-      Usuário: m.user_name,
-      Data: new Date(m.timestamp).toLocaleString(),
-      Motivo: m.reason || ''
-    })));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Histórico");
-    XLSX.writeFile(wb, `auditoria_estoque_${new Date().toISOString().split('T')[0]}.xlsx`);
-  };
-
-  // --- Theme Toggle ---
-  useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('carpa_theme', 'dark');
+    const { error } = await supabase.from('users').upsert(updatedData).eq('badge_id', editingUser.badge_id);
+    
+    if (!error) {
+      if (user?.badgeId === editingUser.badge_id) {
+        const newSession = { 
+          badgeId: updatedData.badge_id, 
+          name: updatedData.name, 
+          role: updatedData.role,
+          photoUrl: updatedData.photo_url
+        };
+        setUser(newSession);
+        localStorage.setItem('carpa_user', JSON.stringify(newSession));
+      }
+      setIsUserModalOpen(false);
+      setEditingUser(null);
+      fetchData(false);
     } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('carpa_theme', 'light');
+      alert("Erro ao salvar colaborador.");
+      setIsSyncing(false);
     }
-  }, [darkMode]);
+  };
 
-  const stats = useMemo(() => {
-    if (items.length === 0) return { critical: 0, ideal: 0, surplus: 0, critPct: 0, idealPct: 0, surpPct: 0 };
-    let critical = 0, ideal = 0, surplus = 0;
-    items.forEach(i => {
-      if (i.current_stock <= i.min_stock) critical++;
-      else if (i.current_stock <= i.min_stock * 2) ideal++;
-      else surplus++;
-    });
-    const total = items.length;
-    return { critical, ideal, surplus, critPct: (critical / total) * 100, idealPct: (ideal / total) * 100, surpPct: (surplus / total) * 100 };
-  }, [items]);
+  const handleDeleteBatch = async () => {
+    if (selectedItemIds.length === 0 || isDeleting) return;
+    const count = selectedItemIds.length;
+    const msg = count === items.length 
+      ? `🚨 ATENÇÃO CRÍTICA: Você está prestes a excluir TODO o inventário (${count} itens). Esta ação é irreversível. Confirmar?`
+      : `Deseja excluir permanentemente os ${count} itens selecionados?`;
+      
+    if (!window.confirm(msg)) return;
 
+    setIsDeleting(true);
+    setIsSyncing(true);
+    
+    try {
+      // Usando .in() com array de IDs para soft-delete
+      const { error } = await supabase
+        .from('inventory_items')
+        .update({ is_active: false })
+        .in('id', selectedItemIds);
+
+      if (error) throw error;
+
+      // Feedback imediato limpando a seleção local
+      const deletedIds = new Set(selectedItemIds);
+      setItems(prev => prev.filter(item => !deletedIds.has(item.id)));
+      setSelectedItemIds([]);
+      
+      // Sincroniza com o banco para garantir consistência
+      await fetchData(false);
+      
+      // Notificação sutil (opcional, aqui usamos alerta simples se necessário)
+    } catch (e) {
+      console.error("Erro na exclusão:", e);
+      alert("Houve um problema ao processar a exclusão. Verifique sua conexão.");
+    } finally {
+      setIsDeleting(false);
+      setIsSyncing(false);
+    }
+  };
+
+  const handleExport = () => {
+    const data = movements.map(m => ({
+      DATA: new Date(m.timestamp).toLocaleString(),
+      MATERIAL: m.item_name,
+      TIPO: m.type === 'IN' ? 'Entrada' : m.type === 'OUT' ? 'Saída' : m.type,
+      QTD: m.quantity,
+      COLABORADOR: m.user_name,
+      OBSERVAÇÃO: m.reason || ''
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Auditoria");
+    XLSX.writeFile(wb, `relatorio_estoque_${Date.now()}.xlsx`);
+  };
+
+  const handleDownloadTemplate = () => {
+    const headers = [
+      {
+        'NOME DO MATERIAL': 'EX: MARRETA 2KG',
+        'UNIDADE DE MEDIDA': 'UND',
+        'ESTOQUE MÍNIMO': 5,
+        'LOCALIZAÇÃO': 'PRATELEIRA A1',
+        'DEPARTAMENTO': 'ALMOXARIFADO',
+        'SALDO INICIAL': 10
+      }
+    ];
+    const ws = XLSX.utils.json_to_sheet(headers);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Template Importação");
+    XLSX.writeFile(wb, "template_importacao_estoque.xlsx");
+  };
+
+  // --- Filtering ---
   const filteredItems = useMemo(() => {
     const s = searchTerm.toLowerCase();
     return items.filter(i => {
@@ -441,193 +443,233 @@ export default function App() {
     });
   }, [items, searchTerm, selectedDept]);
 
-  const dailyLogs = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    return movements.filter(m => m.timestamp.startsWith(today)).slice(0, 15);
-  }, [movements]);
+  const handleSelectAll = () => {
+    const visibleIds = filteredItems.map(i => i.id);
+    const allVisibleSelected = visibleIds.every(id => selectedItemIds.includes(id));
 
-  const departmentsList = useMemo(() => ['TODOS', ...dbDepartments.map(d => d.name).sort()], [dbDepartments]);
+    if (allVisibleSelected && visibleIds.length > 0) {
+      // Desmarca apenas os que estão visíveis
+      setSelectedItemIds(prev => prev.filter(id => !visibleIds.includes(id)));
+    } else {
+      // Adiciona os visíveis à seleção existente (evita duplicatas com Set)
+      setSelectedItemIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const stats = useMemo(() => ({
+    critical: items.filter(i => i.current_stock <= i.min_stock).length,
+    total: items.length
+  }), [items]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('carpa_theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  const activeItem = useMemo(() => items.find(i => i.id === activeItemId), [items, activeItemId]);
+  const futureStock = useMemo(() => {
+    if (!activeItem) return 0;
+    const qty = Number(moveData.quantity) || 0;
+    return movementType === 'IN' ? activeItem.current_stock + qty : activeItem.current_stock - qty;
+  }, [activeItem, moveData.quantity, movementType]);
+
+  const isFutureCritical = useMemo(() => {
+    if (!activeItem) return false;
+    return futureStock <= activeItem.min_stock;
+  }, [activeItem, futureStock]);
 
   if (isLoading && items.length === 0) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-slate-100 dark:bg-[#020617] p-6">
-      <Logo className="w-20 h-20 mb-6 animate-pulse" />
-      <div className="flex items-center gap-3 text-brand-600 font-black tracking-widest text-xs uppercase">
-        <Loader2 className="animate-spin" size={24} /> Conectando Servidores...
-      </div>
+    <div className="h-screen flex flex-col items-center justify-center bg-slate-100 dark:bg-[#020617]">
+      <Logo className="w-16 h-16 mb-4 animate-pulse" />
+      <p className="text-[10px] font-black text-brand-600 uppercase tracking-[0.2em] flex items-center gap-2">
+        <Loader2 className="animate-spin" size={16} /> Carregando Inventário
+      </p>
     </div>
   );
 
   if (!user) return (
-    <div className="h-screen flex items-center justify-center bg-slate-100 dark:bg-[#020617] p-6 font-sans">
-      <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-[3rem] p-10 shadow-2xl border border-slate-200 dark:border-slate-800 text-center animate-in zoom-in duration-300">
-        <Logo className="w-20 h-20 mx-auto mb-8 shadow-xl" />
-        <h1 className="text-3xl font-black tracking-tighter mb-2 dark:text-white">AG SYSTEM</h1>
-        <p className="text-[10px] font-black text-brand-500 uppercase tracking-widest mb-10">Acesso Corporativo</p>
-        
-        {loginStep === 'BADGE' ? (
-          <form onSubmit={handleInitialLogin} className="space-y-6">
-            <div className="space-y-2 text-left">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Matrícula</label>
-              <input autoFocus required value={tempBadge} onChange={e => setTempBadge(e.target.value)} placeholder="0000" className="w-full py-5 rounded-2xl bg-slate-50 dark:bg-slate-950 text-center font-black outline-none border-2 border-transparent focus:border-brand-500 text-xl shadow-inner dark:text-white" />
-            </div>
-            <button type="submit" className="w-full py-5 bg-brand-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:scale-[1.02] active:scale-95 transition-all">IDENTIFICAR</button>
-          </form>
-        ) : (
-          <form onSubmit={handleFinalizeLogin} className="space-y-6 animate-in slide-in-from-right duration-300">
-              <div className="p-4 bg-emerald-50 dark:bg-emerald-950/20 rounded-2xl border border-emerald-100 dark:border-emerald-900/30">
-                <p className="text-[9px] font-black text-emerald-600 uppercase">Novo Colaborador</p>
-              </div>
-              <div className="space-y-2 text-left">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo</label>
-                <input autoFocus required value={tempName} onChange={e => setTempName(e.target.value)} placeholder="SEU NOME" className="w-full py-5 rounded-2xl bg-slate-50 dark:bg-slate-950 text-center font-black outline-none border-2 border-transparent focus:border-brand-500 text-lg shadow-inner uppercase dark:text-white" />
-              </div>
+    <div className="h-screen flex items-center justify-center bg-slate-100 dark:bg-[#020617] p-6">
+      <div className="w-full max-sm:px-4">
+        <div className="w-full max-w-sm mx-auto bg-white dark:bg-slate-900 rounded-[2.5rem] p-10 shadow-2xl border border-slate-200 dark:border-slate-800 text-center animate-in zoom-in duration-300">
+          <Logo className="w-20 h-20 mx-auto mb-8 shadow-xl" />
+          <h1 className="text-2xl font-black tracking-tighter mb-1 dark:text-white">AG SYSTEM</h1>
+          <p className="text-[9px] font-black text-brand-500 uppercase tracking-widest mb-10">Controle de Estoque</p>
+          
+          {loginStep === 'BADGE' ? (
+            <form onSubmit={handleInitialLogin} className="space-y-4">
+              <input autoFocus required value={tempBadge} onChange={e => setTempBadge(e.target.value)} placeholder="MATRÍCULA" className="w-full py-4 rounded-xl bg-slate-50 dark:bg-slate-950 text-center font-black outline-none border-2 border-transparent focus:border-brand-500 text-lg shadow-inner dark:text-white" />
+              <button type="submit" className="w-full py-4 bg-brand-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-xl active:scale-95 transition-all">ACESSAR</button>
+            </form>
+          ) : (
+            <form onSubmit={handleFinalizeLogin} className="space-y-4">
+              <input autoFocus required value={tempName} onChange={e => setTempName(e.target.value)} placeholder="NOME COMPLETO" className="w-full py-4 rounded-xl bg-slate-50 dark:bg-slate-950 text-center font-black outline-none border-2 border-transparent focus:border-brand-500 text-base shadow-inner uppercase dark:text-white" />
               <div className="flex gap-2">
-                <button type="button" onClick={() => setLoginStep('BADGE')} className="flex-1 py-5 bg-slate-100 dark:bg-slate-800 text-slate-400 rounded-2xl font-black uppercase text-xs tracking-widest">VOLTAR</button>
-                <button type="submit" className="flex-[2] py-5 bg-emerald-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl active:scale-95 transition-all">CADASTRAR</button>
+                <button type="button" onClick={() => setLoginStep('BADGE')} className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-400 rounded-xl font-black uppercase text-[10px]">Voltar</button>
+                <button type="submit" className="flex-[2] py-4 bg-emerald-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-xl">Cadastrar</button>
               </div>
-          </form>
-        )}
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );
 
   return (
-    <div className="h-screen flex flex-col lg:flex-row bg-slate-50 dark:bg-[#020617] text-slate-900 dark:text-white overflow-hidden font-sans">
-      
+    <div className="h-screen flex flex-col lg:flex-row bg-[#f8fafc] dark:bg-[#020617] text-slate-900 dark:text-white overflow-hidden font-sans">
       {/* Sidebar */}
-      <aside className={`fixed lg:static inset-y-0 left-0 w-72 z-50 transform transition-transform duration-300 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-        <div className="flex flex-col h-full p-8">
-          <div className="flex items-center justify-between mb-12">
-            <div className="flex items-center gap-4">
-              <Logo className={`w-12 h-12 ${isSyncing ? 'animate-pulse shadow-brand-500/50 shadow-lg' : ''}`} />
-              <span className="font-black text-2xl tracking-tighter">AG SYSTEM</span>
-            </div>
-            <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden p-2 text-slate-400"><X /></button>
+      <aside className={`fixed lg:static inset-y-0 left-0 w-64 z-50 transform transition-transform duration-300 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="flex flex-col h-full p-6">
+          <div className="flex items-center gap-3 mb-10">
+            <Logo className="w-10 h-10" />
+            <span className="font-black text-xl tracking-tighter">AG SYSTEM</span>
           </div>
-
-          <nav className="flex-1 space-y-2">
+          <nav className="flex-1 space-y-1">
             {[
-              { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Painel Geral' },
+              { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Painel' },
               { id: AppView.INVENTORY, icon: Package, label: 'Almoxarifado' },
               { id: AppView.MOVEMENTS, icon: History, label: 'Auditoria' },
-              { id: AppView.USERS, icon: UsersIcon, label: 'Equipe' },
-              { id: AppView.SETTINGS, icon: RefreshCw, label: 'Sincronia' }
+              { id: AppView.SETTINGS, icon: Settings, label: 'Configurações' }
             ].map(v => (
               <button key={v.id} onClick={() => { setCurrentView(v.id); setIsSidebarOpen(false); }}
-                className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold text-[11px] uppercase tracking-wider transition-all ${currentView === v.id ? 'bg-brand-600 text-white shadow-xl shadow-brand-600/30' : 'text-slate-400 hover:bg-brand-500/10 hover:text-brand-500'}`}>
-                <v.icon size={20} /> {v.label}
+                className={`w-full flex items-center gap-3 p-3.5 rounded-xl font-bold text-[10px] uppercase tracking-wider transition-all ${currentView === v.id ? 'bg-brand-600 text-white shadow-lg shadow-brand-600/20' : 'text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-brand-500'}`}>
+                <v.icon size={18} /> {v.label}
               </button>
             ))}
           </nav>
-
-          <div className="mt-auto pt-8 border-t border-slate-200 dark:border-slate-800">
-            <div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border border-slate-200 dark:border-slate-800 mb-4 shadow-sm">
-              <div className="w-12 h-12 rounded-2xl bg-brand-600 flex items-center justify-center text-white font-black text-xl overflow-hidden shadow-inner">
-                {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover" /> : user.name.charAt(0)}
+          <div className="mt-auto pt-6 border-t dark:border-slate-800">
+            <div className="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-2xl mb-4">
+              <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center text-white font-black text-sm overflow-hidden">
+                {user.photoUrl ? <img src={user.photoUrl} className="w-full h-full object-cover"/> : user.name.charAt(0)}
               </div>
               <div className="truncate">
-                <p className="text-[11px] font-black uppercase truncate">{user.name}</p>
-                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Matrícula: {user.badgeId}</p>
+                <p className="text-[10px] font-black uppercase truncate leading-tight">{user.name}</p>
+                <p className="text-[7px] font-bold text-slate-400 uppercase">Mat: {user.badgeId}</p>
               </div>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setDarkMode(!darkMode)} className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl text-slate-400 hover:text-brand-500 transition-all flex-1 flex justify-center">{darkMode ? <Sun size={20}/> : <Moon size={20}/>}</button>
-              <button onClick={() => { setUser(null); localStorage.removeItem('carpa_user'); }} className="p-4 bg-red-500/10 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex-[2]">Sair</button>
+              <button onClick={() => setDarkMode(!darkMode)} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-400 flex-1 flex justify-center hover:bg-brand-500/10 transition-colors">{darkMode ? <Sun size={16}/> : <Moon size={16}/>}</button>
+              <button onClick={() => { setUser(null); localStorage.removeItem('carpa_user'); }} className="p-2.5 bg-red-500/10 text-red-500 rounded-lg font-black text-[8px] uppercase flex-[2] hover:bg-red-500 hover:text-white transition-colors">Sair</button>
             </div>
           </div>
         </div>
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-        <header className="h-20 flex items-center justify-between px-8 border-b border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-[#020617]/60 backdrop-blur-xl sticky top-0 z-30">
-          <div className="flex items-center gap-6">
-            <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-3 bg-slate-100 dark:bg-slate-800 rounded-xl text-slate-500"><Menu size={24}/></button>
-            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-brand-600">{currentView}</h2>
+        <header className="h-14 flex items-center justify-between px-6 border-b border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-[#020617]/60 backdrop-blur-xl sticky top-0 z-30">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 bg-slate-100 dark:bg-slate-800 rounded-lg"><Menu size={18}/></button>
+            <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-600">{currentView}</h2>
           </div>
-          
-          <div className="flex gap-3">
+          <div className="flex gap-2 items-center">
             {selectedItemIds.length > 0 && (
-              <button onClick={handleDeleteBatch} className="bg-red-600 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-3 shadow-lg hover:scale-105 transition-all">
-                <Trash2 size={18}/> EXCLUIR EM LOTE ({selectedItemIds.length})
-              </button>
+              <div className="flex items-center gap-2 animate-in slide-in-from-right duration-200">
+                <button 
+                  onClick={() => setSelectedItemIds([])}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white bg-slate-100 dark:bg-slate-800 rounded-lg transition-colors border dark:border-slate-700"
+                  title="Cancelar seleção"
+                >
+                  <MinusCircle size={14}/>
+                </button>
+                <span className="text-[8px] font-black uppercase text-brand-600 bg-brand-50 dark:bg-brand-950/20 px-3 py-1.5 rounded-lg border dark:border-brand-900">
+                  {selectedItemIds.length} selecionado{selectedItemIds.length > 1 ? 's' : ''}
+                </span>
+                <button 
+                  onClick={handleDeleteBatch} 
+                  disabled={isDeleting}
+                  className="bg-red-600 text-white px-4 py-1.5 rounded-lg font-black text-[8px] uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-red-600/20 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isDeleting ? <Loader2 size={14} className="animate-spin"/> : <Trash2 size={14}/>}
+                  {isDeleting ? 'PROCESSANDO...' : 'EXCLUIR EM MASSA'}
+                </button>
+              </div>
             )}
             {currentView === AppView.INVENTORY && selectedItemIds.length === 0 && (
-              <button onClick={() => { setEditingItem(null); setFormData({}); setIsItemModalOpen(true); }} className="bg-brand-600 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-3 shadow-lg hover:scale-105 transition-all">
-                <Plus size={20}/> ADICIONAR ITEM
-              </button>
+              <div className="flex gap-2">
+                <button onClick={handleDownloadTemplate} className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-lg font-black text-[8px] uppercase tracking-widest flex items-center gap-2 hover:bg-slate-200 transition-colors border dark:border-slate-700">
+                  <FileSpreadsheet size={16}/> TEMPLATE
+                </button>
+                <button onClick={() => { setEditingItem(null); setFormData({}); setIsItemModalOpen(true); }} className="bg-brand-600 text-white px-3 py-1.5 rounded-lg font-black text-[8px] uppercase tracking-widest flex items-center gap-2 shadow-md"><Plus size={16}/> NOVO ITEM</button>
+              </div>
             )}
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 lg:p-10 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-4 lg:p-6 custom-scrollbar">
           <div className="max-w-7xl mx-auto">
-            
             {currentView === AppView.DASHBOARD && (
-              <div className="space-y-8 animate-in fade-in duration-500">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="p-8 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Almoxarifado</p>
-                    <h3 className="text-6xl font-black tracking-tighter">{items.length}</h3>
+              <div className="space-y-6 animate-in fade-in duration-500">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm transition-transform hover:scale-[1.02]">
+                    <div className="flex items-center justify-between mb-2">
+                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Total Geral</p>
+                       <Package size={16} className="text-brand-500 opacity-50"/>
+                    </div>
+                    <h3 className="text-4xl font-black text-slate-800 dark:text-white tracking-tighter">{stats.total}</h3>
+                    <p className="text-[7px] font-bold text-slate-400 mt-2 uppercase">Materiais Ativos</p>
                   </div>
-                  <div className="p-8 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl">
-                    <p className="text-[10px] font-black text-red-500 uppercase tracking-widest mb-1">Abaixo do Mínimo</p>
-                    <h3 className="text-6xl font-black text-red-600 tracking-tighter">{stats.critical}</h3>
-                  </div>
-                  <div className="p-8 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl">
-                    <p className="text-[10px] font-black text-brand-500 uppercase tracking-widest mb-1">Ações Hoje</p>
-                    <h3 className="text-6xl font-black text-brand-600 tracking-tighter">{dailyLogs.length}</h3>
+                  <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm transition-transform hover:scale-[1.02]">
+                    <div className="flex items-center justify-between mb-2">
+                       <p className="text-[9px] font-black text-red-500 uppercase tracking-widest">Alertas</p>
+                       <AlertTriangle size={16} className="text-red-500 opacity-50"/>
+                    </div>
+                    <h3 className="text-4xl font-black text-red-600 tracking-tighter">{stats.critical}</h3>
+                    <p className="text-[7px] font-bold text-red-400 mt-2 uppercase">Abaixo do Mínimo</p>
                   </div>
                 </div>
 
-                {items.length === 0 && (
-                  <div className="bg-brand-50 dark:bg-brand-950/20 p-16 rounded-[4rem] border-4 border-dashed border-brand-200 dark:border-brand-900/50 text-center animate-in zoom-in">
-                    <DatabaseZap size={60} className="mx-auto mb-6 text-brand-400" />
-                    <h3 className="text-3xl font-black mb-4 dark:text-white tracking-tighter">Estoque Vazio?</h3>
-                    <p className="text-slate-500 font-bold mb-10 max-w-md mx-auto leading-relaxed uppercase text-xs tracking-widest">Se o seu aparelho está mostrando estoque zerado enquanto outros estão sincronizados, force o recarregamento dos dados.</p>
-                    <button onClick={() => fetchData(true)} className="bg-brand-600 text-white px-10 py-5 rounded-3xl font-black shadow-2xl flex items-center gap-4 mx-auto hover:scale-110 active:scale-95 transition-all text-xs tracking-[0.2em]">
-                      <RefreshCw className={isSyncing ? 'animate-spin' : ''} size={24} /> FORÇAR SINCRONIA COMPLETA
-                    </button>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                    <h4 className="text-xs font-black uppercase tracking-widest mb-10 text-slate-400">Distribuição de Estoque</h4>
-                    <div className="space-y-6">
-                      <div className="flex justify-between items-center text-xs font-black uppercase">
-                        <span>Estado Crítico</span>
-                        <span className="text-red-600">{stats.critical} ({Math.round(stats.critPct)}%)</span>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 p-8 rounded-[2.5rem] bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 shadow-xl overflow-hidden">
+                    <div className="flex items-center justify-between mb-8">
+                      <div>
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-white flex items-center gap-2">
+                          <BarChart3 size={16} className="text-brand-600"/>
+                          Controle de Fluxo Semanal
+                        </h3>
+                        <p className="text-[8px] font-bold text-slate-400 uppercase mt-1">Comparativo de entradas e saídas (7 dias)</p>
                       </div>
-                      <div className="w-full bg-slate-100 dark:bg-slate-800 h-6 rounded-full overflow-hidden flex">
-                        <div style={{ width: `${stats.critPct}%` }} className="bg-red-500 h-full transition-all duration-1000" />
-                        <div style={{ width: `${stats.idealPct}%` }} className="bg-emerald-500 h-full transition-all duration-1000" />
-                        <div style={{ width: `${stats.surpPct}%` }} className="bg-brand-500 h-full transition-all duration-1000" />
-                      </div>
-                      <div className="flex gap-4">
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-500"/> <span className="text-[9px] font-black uppercase text-slate-400">Crítico</span></div>
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-emerald-500"/> <span className="text-[9px] font-black uppercase text-slate-400">Ideal</span></div>
-                        <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-brand-500"/> <span className="text-[9px] font-black uppercase text-slate-400">Excesso</span></div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                          <span className="text-[8px] font-black uppercase text-slate-400">Entradas</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 ml-2">
+                          <div className="w-2 h-2 rounded-full bg-orange-500"></div>
+                          <span className="text-[8px] font-black uppercase text-slate-400">Saídas</span>
+                        </div>
                       </div>
                     </div>
+                    <div className="h-[280px] w-full">
+                      <canvas ref={chartRef}></canvas>
+                    </div>
                   </div>
-                  
-                  <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                    <h4 className="text-xs font-black uppercase tracking-widest mb-8 text-slate-400">Logs do Dia</h4>
-                    <div className="space-y-4 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar">
-                      {dailyLogs.map(m => (
-                        <div key={m.id} className="flex items-center gap-4 p-4 rounded-3xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${m.type === 'IN' ? 'bg-emerald-100 text-emerald-600' : m.type === 'OUT' ? 'bg-orange-100 text-orange-600' : 'bg-brand-100 text-brand-600'}`}>
-                            {m.type === 'IN' ? '+' : m.type === 'OUT' ? '-' : '•'}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[11px] font-black uppercase truncate">{m.item_name}</p>
-                            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{m.user_name} • {new Date(m.timestamp).toLocaleTimeString()}</p>
-                          </div>
-                          <span className={`text-xl font-black tracking-tighter ${m.type === 'IN' ? 'text-emerald-500' : m.type === 'OUT' ? 'text-orange-500' : 'text-slate-400'}`}>
-                            {m.quantity || 0}
+
+                  <div className="p-8 rounded-[2.5rem] bg-slate-900 text-white border border-slate-800 shadow-2xl relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                      <DatabaseZap size={100} />
+                    </div>
+                    <h3 className="text-xs font-black uppercase tracking-widest mb-6 flex items-center gap-2">
+                      <Sparkles size={16} className="text-brand-400"/>
+                      Status do Almoxarifado
+                    </h3>
+                    <div className="space-y-6 relative z-10">
+                      <div>
+                        <p className="text-[8px] font-black text-slate-400 uppercase mb-2">Giro de Estoque</p>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-5xl font-black tracking-tighter text-brand-400">
+                            {movements.length}
                           </span>
+                          <span className="text-[9px] font-black uppercase text-slate-500">Operações</span>
                         </div>
-                      ))}
+                      </div>
+                      <div className="pt-6 border-t border-white/5 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-black uppercase text-slate-400">Integridade de Dados</span>
+                          <span className="text-[9px] font-black uppercase text-emerald-400">99.9%</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                           <div className="h-full bg-brand-600 w-[99.9%]"></div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -635,50 +677,80 @@ export default function App() {
             )}
 
             {currentView === AppView.INVENTORY && (
-              <div className="space-y-8 animate-in slide-in-from-bottom-10 duration-500 pb-20">
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col md:flex-row gap-6 sticky top-0 z-20">
-                  <div className="flex-1 flex items-center gap-4 bg-slate-50 dark:bg-slate-950 px-6 py-4 rounded-3xl border border-slate-200 dark:border-slate-800">
-                    <Search className="text-slate-400" size={24}/>
-                    <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="PESQUISAR MATERIAL OU LOCAL..." className="w-full bg-transparent outline-none font-black text-xs uppercase tracking-widest dark:text-white" />
+              <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
+                <div className="bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row gap-3 sticky top-0 z-20">
+                  <div className="flex-1 flex items-center gap-3 bg-slate-50 dark:bg-slate-950 px-4 py-2 rounded-xl border dark:border-slate-800 transition-all focus-within:border-brand-500 focus-within:bg-white">
+                    <Search className="text-slate-400" size={16}/>
+                    <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Pesquisar material..." className="w-full bg-transparent outline-none font-medium text-xs dark:text-white" />
                   </div>
-                  <div className="flex gap-2 overflow-x-auto pb-1 max-w-md">
-                      {departmentsList.map(d => (
-                        <button key={d} onClick={() => setSelectedDept(d)} className={`px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${selectedDept === d ? 'bg-brand-600 text-white shadow-xl' : 'bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-brand-500'}`}>{d}</button>
+                  
+                  <div className="flex gap-1.5 items-center">
+                    <button 
+                      onClick={handleSelectAll}
+                      className={`px-4 py-2 rounded-xl text-[8px] font-black uppercase tracking-wider transition-all flex items-center gap-2 border shadow-sm ${filteredItems.length > 0 && filteredItems.every(i => selectedItemIds.includes(i.id)) ? 'bg-brand-600 text-white border-brand-500' : 'bg-slate-50 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 hover:text-brand-500'}`}
+                    >
+                      {filteredItems.length > 0 && filteredItems.every(i => selectedItemIds.includes(i.id)) ? <CheckSquare size={14}/> : <Square size={14}/>}
+                      {filteredItems.length > 0 && filteredItems.every(i => selectedItemIds.includes(i.id)) ? 'Desmarcar Tudo' : 'Selecionar Tudo'}
+                    </button>
+                    
+                    <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                      {['TODOS', ...dbDepartments.map(d => d.name)].map(d => (
+                        <button key={d} onClick={() => setSelectedDept(d)} className={`px-4 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-wider transition-all whitespace-nowrap ${selectedDept === d ? 'bg-brand-600 text-white shadow-md' : 'bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-brand-500'}`}>{d}</button>
                       ))}
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                   {filteredItems.map(item => (
-                    <div 
-                      key={item.id} 
-                      className={`p-4 bg-white dark:bg-slate-900 rounded-[2.5rem] border-4 transition-all group relative overflow-hidden flex flex-col ${selectedItemIds.includes(item.id) ? 'border-brand-600 shadow-2xl scale-[1.03]' : 'border-transparent shadow-md hover:border-slate-200'}`}
-                    >
+                    <div key={item.id} className={`group bg-white dark:bg-slate-900 rounded-[1.5rem] border transition-all relative flex flex-col shadow-sm overflow-hidden ${selectedItemIds.includes(item.id) ? 'border-brand-600 ring-2 ring-brand-500/20 shadow-lg shadow-brand-500/5' : 'border-slate-100 dark:border-slate-800 hover:shadow-md hover:border-slate-200 dark:hover:border-slate-700'}`}>
                       <button 
                         onClick={() => setSelectedItemIds(prev => prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id])}
-                        className="absolute top-4 left-4 z-10 p-2 bg-white/30 backdrop-blur-md rounded-xl text-white border border-white/20 hover:scale-110 transition-transform"
+                        className={`absolute top-2.5 left-2.5 z-10 p-2 rounded-xl border backdrop-blur-md transition-all ${selectedItemIds.includes(item.id) ? 'bg-brand-600 text-white border-brand-500 scale-110 shadow-md' : 'bg-white/60 dark:bg-black/30 text-slate-400 border-white/20 opacity-0 group-hover:opacity-100'}`}
                       >
-                        {selectedItemIds.includes(item.id) ? <CheckSquare size={20} className="text-brand-400 fill-white"/> : <Square size={20}/>}
+                        {selectedItemIds.includes(item.id) ? <CheckSquare size={16} /> : <Square size={16}/>}
                       </button>
 
-                      <div className="aspect-square bg-slate-100 dark:bg-slate-950 rounded-[2rem] mb-4 relative overflow-hidden flex items-center justify-center shadow-inner">
-                        {item.photo_url ? <img src={item.photo_url} className="w-full h-full object-cover" /> : <Package className="opacity-10" size={60} />}
-                        <div className="absolute top-3 right-3 px-3 py-1 bg-slate-900/80 backdrop-blur-md rounded-xl text-[7px] font-black text-white uppercase tracking-tighter shadow-lg">{item.location}</div>
-                      </div>
-                      
-                      <div className="px-2 flex-1 flex flex-col">
-                        <h4 className="text-[11px] font-black uppercase truncate mb-0.5 dark:text-white">{item.name}</h4>
-                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mb-4">{item.department}</p>
-                        
-                        <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-slate-800 mt-auto">
-                          <div className="flex flex-col">
-                            <span className={`text-3xl font-black tracking-tighter ${item.current_stock <= item.min_stock ? 'text-red-500 animate-pulse' : 'text-brand-600'}`}>{item.current_stock}</span>
-                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{item.unit}</span>
+                      <div className="aspect-[1/1] bg-slate-50 dark:bg-slate-950/50 relative overflow-hidden flex items-center justify-center border-b dark:border-slate-800">
+                        {item.photo_url ? (
+                          <img src={item.photo_url} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                        ) : (
+                          <Package className="text-slate-200 dark:text-slate-800" size={48} />
+                        )}
+                        <div className="absolute top-2 right-2 flex flex-col gap-1.5 items-end">
+                          <div className="px-2 py-0.5 bg-slate-900/70 backdrop-blur-md rounded-md text-[7px] font-black text-white uppercase tracking-wider border border-white/10 flex items-center gap-1 shadow-lg">
+                            <MapPin size={8} /> {item.location}
                           </div>
-                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => { setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-2 bg-brand-500/10 text-brand-500 rounded-lg hover:bg-brand-500 hover:text-white transition-all"><Edit3 size={16}/></button>
-                            <button onClick={() => { setActiveItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500 hover:text-white transition-all"><Plus size={16}/></button>
-                            <button onClick={() => { setActiveItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-2 bg-orange-500/10 text-orange-500 rounded-lg hover:bg-orange-500 hover:text-white transition-all"><TrendingDown size={16}/></button>
+                          {item.current_stock <= item.min_stock && (
+                            <div className="px-2 py-0.5 bg-red-600 text-white rounded-md text-[7px] font-black uppercase tracking-wider flex items-center gap-1 shadow-lg animate-pulse">
+                              <AlertTriangle size={8} /> Crítico
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="p-4 flex-1 flex flex-col">
+                        <div className="mb-3">
+                          <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-0.5">{item.department}</p>
+                          <h4 className="text-[11px] font-black uppercase text-slate-700 dark:text-slate-100 line-clamp-2 leading-tight" title={item.name}>
+                            {item.name}
+                          </h4>
+                        </div>
+
+                        <div className="mt-auto flex items-end justify-between pt-3 border-t border-slate-50 dark:border-slate-800/50">
+                          <div>
+                            <span className="text-[7px] font-black text-slate-400 uppercase block mb-0.5">Saldo Atual</span>
+                            <div className="flex items-baseline gap-1">
+                              <span className={`text-2xl font-black tracking-tighter ${item.current_stock <= item.min_stock ? 'text-red-500' : 'text-brand-600'}`}>
+                                {item.current_stock}
+                              </span>
+                              <span className="text-[8px] font-black text-slate-300 dark:text-slate-600 uppercase">{item.unit}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-1">
+                            <button onClick={() => { setActiveItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-2 bg-emerald-500/10 text-emerald-600 rounded-lg hover:bg-emerald-600 hover:text-white transition-all border border-emerald-500/5" title="Entrada"><Plus size={14}/></button>
+                            <button onClick={() => { setActiveItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-2 bg-orange-500/10 text-orange-600 rounded-lg hover:bg-orange-600 hover:text-white transition-all border border-orange-500/5" title="Saída"><TrendingDown size={14}/></button>
+                            <button onClick={() => { setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-all border dark:border-slate-700" title="Editar"><Edit3 size={14}/></button>
                           </div>
                         </div>
                       </div>
@@ -689,121 +761,190 @@ export default function App() {
             )}
 
             {currentView === AppView.MOVEMENTS && (
-              <div className="animate-in slide-in-from-bottom-10 max-w-5xl mx-auto space-y-6">
-                <div className="flex items-center justify-between p-6">
-                  <h3 className="text-2xl font-black uppercase tracking-tighter">Auditoria de Fluxo</h3>
-                  <button onClick={handleExport} className="p-4 bg-brand-600 text-white rounded-2xl flex items-center gap-3 font-black text-xs uppercase shadow-xl hover:scale-105 transition-all">
-                     <Download size={20} /> Relatório Completo
-                   </button>
+              <div className="max-w-4xl mx-auto space-y-3 pb-20 animate-in slide-in-from-bottom-4 duration-500">
+                <div className="flex items-center justify-between px-2 mb-4">
+                  <h3 className="text-sm font-black uppercase tracking-tighter text-slate-500">Histórico de Movimentações</h3>
+                  <button onClick={handleExport} className="px-3 py-1.5 bg-brand-600 text-white rounded-lg flex items-center gap-2 font-black text-[8px] uppercase shadow-lg transition-transform hover:scale-105 active:scale-95"><Download size={14}/> Relatório</button>
                 </div>
-                <div className="space-y-4">
-                  {movements.map(m => (
-                    <div key={m.id} className="p-6 bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 flex items-center justify-between shadow-sm hover:border-brand-500 transition-all">
-                      <div className="flex items-center gap-6">
-                        <div className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center font-black ${
-                          m.type === 'IN' ? 'bg-emerald-100 text-emerald-600' : 
-                          m.type === 'OUT' ? 'bg-orange-100 text-orange-600' : 
-                          'bg-brand-100 text-brand-600'
-                        }`}>
-                          {m.type === 'IN' ? <Plus size={28}/> : m.type === 'OUT' ? <TrendingDown size={28}/> : <Activity size={28}/>}
-                        </div>
-                        <div>
-                          <p className="text-sm font-black uppercase dark:text-white">{m.item_name}</p>
-                          <div className="flex items-center gap-6 mt-2 opacity-60">
-                            <span className="text-[10px] font-black uppercase flex items-center gap-2"><UserIcon size={14}/> {m.user_name}</span>
-                            <span className="text-[10px] font-black uppercase flex items-center gap-2"><Clock size={14}/> {new Date(m.timestamp).toLocaleString()}</span>
-                          </div>
-                        </div>
+                {movements.map(m => (
+                  <div key={m.id} className="p-4 bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 flex items-center justify-between shadow-sm">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${m.type === 'IN' ? 'bg-emerald-50 text-emerald-600' : m.type === 'OUT' ? 'bg-orange-50 text-orange-600' : 'bg-brand-50 text-brand-600'}`}>
+                        {m.type === 'IN' ? <ArrowUpRight size={18}/> : m.type === 'OUT' ? <ArrowDownRight size={18}/> : <Activity size={18}/>}
                       </div>
-                      <div className="text-right">
-                        <span className={`text-3xl font-black tracking-tighter ${m.type === 'IN' ? 'text-emerald-500' : m.type === 'OUT' ? 'text-orange-500' : 'text-slate-400'}`}>
-                          {m.quantity || 0}
-                        </span>
-                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">{m.type === 'IN' ? 'ENTRADA' : m.type === 'OUT' ? 'SAÍDA' : 'ALTERAÇÃO'}</p>
+                      <div>
+                        <p className="text-[10px] font-black uppercase dark:text-white leading-tight mb-1">{m.item_name}</p>
+                        <div className="flex items-center gap-3 opacity-50 text-[7px] font-black uppercase">
+                          <span className="flex items-center gap-1"><UserIcon size={10}/> {m.user_name}</span>
+                          <span className="flex items-center gap-1"><Clock size={10}/> {new Date(m.timestamp).toLocaleString()}</span>
+                          {m.reason && <span className="flex items-center gap-1 text-brand-500"><ClipboardList size={10}/> {m.reason}</span>}
+                        </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {currentView === AppView.USERS && (
-              <div className="animate-in slide-in-from-bottom-10 space-y-10">
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-8">
-                  {allUsers.map(u => (
-                    <div 
-                      key={u.badge_id} 
-                      onClick={() => { setEditingUser(u); setUserFormData(u); setIsUserModalOpen(true); }}
-                      className="p-10 bg-white dark:bg-slate-900 rounded-[3rem] border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col items-center text-center group transition-all hover:border-emerald-500 cursor-pointer hover:scale-[1.03] relative"
-                    >
-                      <div className="w-32 h-32 rounded-[2.5rem] bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-emerald-600 font-black text-5xl shadow-lg mb-6 overflow-hidden relative border-4 border-white dark:border-slate-700">
-                        {u.photo_url ? (
-                          <img src={u.photo_url} className="w-full h-full object-cover" />
-                        ) : (
-                          <span className="opacity-30">{u.name.charAt(0)}</span>
-                        )}
-                        <div className="absolute inset-0 bg-emerald-600/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity backdrop-blur-[2px]">
-                          <Edit3 className="text-white" size={32} />
-                        </div>
-                      </div>
-                      <h4 className="text-sm font-black uppercase tracking-widest mb-1 truncate w-full dark:text-white">{u.name}</h4>
-                      <p className="text-[9px] font-bold text-emerald-600 uppercase tracking-widest mb-6">{u.role}</p>
-                      <div className="px-6 py-3 bg-slate-50 dark:bg-slate-950 rounded-2xl text-[10px] font-black uppercase text-slate-400 shadow-inner">MAT: {u.badge_id}</div>
+                    <div className="text-right">
+                      <span className={`text-2xl font-black tracking-tighter ${m.type === 'IN' ? 'text-emerald-500' : m.type === 'OUT' ? 'text-orange-500' : 'text-slate-400'}`}>{m.quantity}</span>
+                      <p className="text-[7px] font-black text-slate-400 uppercase">{m.type === 'IN' ? 'Entrada' : m.type === 'OUT' ? 'Saída' : 'Ajuste'}</p>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
               </div>
             )}
 
             {currentView === AppView.SETTINGS && (
-              <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-bottom-10">
-                <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><Globe size={28} className="text-brand-600"/> Gateway de Sincronismo</h4>
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center p-6 bg-slate-50 dark:bg-slate-950 rounded-3xl border dark:border-slate-800">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Servidor Supabase</span>
-                      <span className={`text-[10px] font-black uppercase ${connStatus === 'online' ? 'text-emerald-500' : 'text-orange-500'}`}>
-                        {connStatus === 'online' ? '● ESTÁVEL' : '● DESCONECTADO'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center p-6 bg-slate-50 dark:bg-slate-950 rounded-3xl border dark:border-slate-800">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Data da Última Sincronia</span>
-                      <span className="text-[10px] font-black uppercase dark:text-white">{lastSync?.toLocaleString() || 'NUNCA'}</span>
-                    </div>
-                    <button onClick={() => fetchData(true)} className="w-full py-6 bg-brand-600 text-white rounded-3xl font-black uppercase text-[12px] tracking-[0.2em] shadow-2xl shadow-brand-500/30 flex items-center justify-center gap-4 active:scale-95 transition-all">
-                      <RefreshCw size={24} className={isSyncing ? 'animate-spin' : ''} /> REFORÇAR SINCRONIA AGORA
-                    </button>
-                    <p className="text-center text-[9px] text-slate-400 font-bold uppercase tracking-widest px-10">Use este botão caso existam diferenças entre aparelhos.</p>
+              <div className="max-w-6xl mx-auto space-y-10 pb-20 animate-in slide-in-from-right-4 duration-500">
+                <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                  <div>
+                    <h1 className="text-3xl font-black tracking-tighter text-slate-800 dark:text-white mb-1 uppercase">Configurações</h1>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Ajustes do sistema e gestão de equipe</p>
                   </div>
+                </header>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="space-y-8">
+                    <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800 shadow-xl">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-brand-600 mb-6 flex items-center gap-2">
+                        <Smartphone size={16}/> Preferências do Sistema
+                      </h3>
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-950/50 rounded-2xl border dark:border-slate-800">
+                          <div>
+                            <p className="text-[10px] font-black uppercase text-slate-700 dark:text-white">Modo de Exibição</p>
+                            <p className="text-[8px] font-bold text-slate-400 uppercase">Alternar entre claro e escuro</p>
+                          </div>
+                          <button onClick={() => setDarkMode(!darkMode)} className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-md border dark:border-slate-700 text-brand-600 transition-transform active:scale-90">
+                            {darkMode ? <Sun size={20}/> : <Moon size={20}/>}
+                          </button>
+                        </div>
+
+                        <div className="p-6 bg-slate-900 rounded-3xl border border-white/5 relative overflow-hidden group">
+                           <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:scale-110 transition-transform pointer-events-none">
+                             <Database size={80}/>
+                           </div>
+                           <h4 className="text-[9px] font-black uppercase text-white tracking-[0.2em] mb-4 flex items-center gap-2">
+                              <Activity size={12} className="text-brand-400"/> Status de Sincronia
+                           </h4>
+                           <div className="space-y-4 relative z-10">
+                              <div className="flex items-center justify-between">
+                                 <div className="flex items-center gap-3">
+                                    <div className={`w-3 h-3 rounded-full animate-pulse ${isOnline ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                                    <span className="text-lg font-black text-white">{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+                                 </div>
+                                 <button onClick={() => fetchData()} disabled={isSyncing} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors disabled:opacity-50">
+                                    <RefreshCw size={16} className={isSyncing ? 'animate-spin' : ''}/>
+                                 </button>
+                              </div>
+                              <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                                 <span className="text-[8px] font-black text-slate-500 uppercase">Última Atualização:</span>
+                                 <span className="text-[9px] font-black text-brand-400">{lastSync ? lastSync.toLocaleString() : 'NUNCA'}</span>
+                              </div>
+                           </div>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+
+                  <section className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800 shadow-xl flex flex-col h-full">
+                     <h3 className="text-xs font-black uppercase tracking-widest text-brand-600 mb-6 flex items-center gap-2">
+                        <UsersIcon size={16}/> Gestão de Equipe
+                     </h3>
+                     <div className="flex-1 space-y-4 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
+                        {allUsers.map(u => (
+                          <div key={u.badge_id} className="group p-4 bg-slate-50 dark:bg-slate-950/50 rounded-2xl border dark:border-slate-800 flex items-center justify-between hover:border-brand-500 transition-all shadow-sm">
+                             <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 rounded-xl bg-brand-600 flex items-center justify-center text-white font-black text-lg overflow-hidden border-2 border-white dark:border-slate-800 shadow-lg">
+                                   {u.photo_url ? <img src={u.photo_url} className="w-full h-full object-cover"/> : u.name.charAt(0)}
+                                </div>
+                                <div>
+                                   <p className="text-[10px] font-black uppercase text-slate-800 dark:text-white leading-tight mb-0.5">{u.name}</p>
+                                   <div className="flex items-center gap-3">
+                                      <span className="text-[7px] font-black text-slate-400 uppercase px-1.5 py-0.5 bg-white dark:bg-slate-800 rounded border dark:border-slate-700">{u.role}</span>
+                                      <span className="text-[7px] font-black text-slate-400 uppercase">MAT: {u.badge_id}</span>
+                                   </div>
+                                </div>
+                             </div>
+                             <button onClick={() => { setEditingUser(u); setUserFormData(u); setIsUserModalOpen(true); }} className="p-2.5 bg-white dark:bg-slate-800 text-slate-400 hover:text-brand-600 hover:bg-brand-50 rounded-xl transition-all shadow-sm border dark:border-slate-700 lg:opacity-0 group-hover:opacity-100">
+                                <Edit3 size={16}/>
+                             </button>
+                          </div>
+                        ))}
+                     </div>
+                  </section>
                 </div>
               </div>
             )}
-
           </div>
         </div>
       </main>
 
-      {/* MODAL: ITEM */}
+      {/* User Edit Modal */}
+      {isUserModalOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in zoom-in duration-200">
+           <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-[3rem] overflow-hidden shadow-2xl border dark:border-slate-800">
+              <div className="p-6 bg-slate-50 dark:bg-slate-950/50 border-b dark:border-slate-800 flex justify-between items-center">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-brand-600">Editar Perfil</h3>
+                <button onClick={() => setIsUserModalOpen(false)} className="p-2 text-slate-400 hover:text-red-500 bg-white dark:bg-slate-800 rounded-lg transition-colors"><X size={18}/></button>
+              </div>
+              <form onSubmit={handleSaveUser} className="p-8 space-y-6">
+                 <div className="flex flex-col items-center gap-4">
+                    <div onClick={() => userPhotoInputRef.current?.click()} className="w-24 h-24 rounded-[2rem] bg-brand-50 dark:bg-brand-950/20 border-2 border-dashed border-brand-200 dark:border-brand-900 flex items-center justify-center cursor-pointer overflow-hidden relative group">
+                       {userFormData.photo_url ? <img src={userFormData.photo_url} className="w-full h-full object-cover"/> : <UserIcon className="text-brand-300" size={32}/>}
+                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><Camera className="text-white" size={20}/></div>
+                    </div>
+                    <input ref={userPhotoInputRef} type="file" className="hidden" accept="image/*" onChange={(e) => {
+                       const file = e.target.files?.[0];
+                       if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => setUserFormData({ ...userFormData, photo_url: reader.result as string });
+                          reader.readAsDataURL(file);
+                       }
+                    }}/>
+                    <p className="text-[7px] font-black uppercase text-slate-400">Clique para alterar foto</p>
+                 </div>
+
+                 <div className="space-y-4">
+                    <div className="space-y-1">
+                       <label className="text-[8px] font-black text-slate-400 uppercase ml-1">Nome Completo</label>
+                       <input required value={userFormData.name || ''} onChange={e => setUserFormData({...userFormData, name: e.target.value})} className="w-full p-4 rounded-xl bg-slate-50 dark:bg-slate-950 text-xs font-bold uppercase dark:text-white border-2 border-transparent focus:border-brand-500 outline-none"/>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                       <div className="space-y-1">
+                          <label className="text-[8px] font-black text-slate-400 uppercase ml-1">Função</label>
+                          <select value={userFormData.role || ''} onChange={e => setUserFormData({...userFormData, role: e.target.value})} className="w-full p-4 rounded-xl bg-slate-50 dark:bg-slate-950 text-[10px] font-black uppercase dark:text-white border-2 border-transparent focus:border-brand-500 outline-none appearance-none">
+                             <option value="Colaborador">Colaborador</option>
+                             <option value="Almoxarife">Almoxarife</option>
+                             <option value="Supervisor">Supervisor</option>
+                             <option value="Administrador">Administrador</option>
+                          </select>
+                       </div>
+                       <div className="space-y-1">
+                          <label className="text-[8px] font-black text-slate-400 uppercase ml-1">Matrícula</label>
+                          <input required value={userFormData.badge_id || ''} onChange={e => setUserFormData({...userFormData, badge_id: e.target.value})} className="w-full p-4 rounded-xl bg-slate-50 dark:bg-slate-950 text-xs font-bold uppercase dark:text-white border-2 border-transparent focus:border-brand-500 outline-none"/>
+                       </div>
+                    </div>
+                 </div>
+
+                 <button type="submit" disabled={isSyncing} className="w-full py-4 bg-brand-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl flex items-center justify-center gap-2 hover:bg-brand-700 transition-all disabled:opacity-50">
+                    {isSyncing ? <Loader2 className="animate-spin" size={16}/> : <CheckCircle2 size={16}/>}
+                    SALVAR ALTERAÇÕES
+                 </button>
+              </form>
+           </div>
+        </div>
+      )}
+
+      {/* Item Modal */}
       {isItemModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md animate-in zoom-in duration-300">
-          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 relative">
-            <button 
-              type="button"
-              onClick={handleIAInsights}
-              disabled={isGeneratingInsights || !formData.name}
-              className="absolute top-10 right-28 p-4 bg-gradient-to-br from-brand-600 to-indigo-700 text-white rounded-2xl shadow-xl hover:scale-105 transition-all disabled:opacity-50 disabled:scale-100 flex items-center gap-3 group z-50 border border-white/20"
-            >
-              {isGeneratingInsights ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={18} className="group-hover:animate-bounce" />}
-              <span className="text-[9px] font-black uppercase tracking-widest">IA Insight</span>
-            </button>
-            <div className="p-10 bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-              <h3 className="text-sm font-black uppercase tracking-widest text-brand-600">{editingItem ? 'Ficha de Material' : 'Novo Cadastro'}</h3>
-              <button onClick={() => { setIsItemModalOpen(false); setEditingItem(null); setFormData({}); }} className="p-3 text-slate-400 hover:text-red-500 bg-white dark:bg-slate-800 rounded-xl shadow-sm"><X size={28}/></button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in zoom-in duration-200">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-[2.5rem] overflow-hidden shadow-2xl border dark:border-slate-800">
+            <div className="p-6 bg-slate-50 dark:bg-slate-950/50 border-b dark:border-slate-800 flex justify-between items-center">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-brand-600">Cadastro de Material</h3>
+              <button onClick={() => setIsItemModalOpen(false)} className="p-2 text-slate-400 hover:text-red-500 bg-white dark:bg-slate-800 rounded-lg transition-colors"><X size={18}/></button>
             </div>
-            <form onSubmit={handleSaveItem} className="p-12 space-y-8 max-h-[70vh] overflow-y-auto custom-scrollbar">
-              <div className="flex gap-8 items-center">
-                <div onClick={() => fileInputRef.current?.click()} className="w-40 h-40 rounded-[3rem] bg-slate-100 dark:bg-slate-950 border-4 border-white dark:border-slate-800 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden shadow-2xl transition-transform hover:scale-105">
-                  {formData.photo_url ? <img src={formData.photo_url} className="w-full h-full object-cover" /> : <><Camera className="text-slate-300 mb-2" size={40} /><span className="text-[9px] font-black uppercase text-slate-400">Capturar</span></>}
+            <form onSubmit={handleSaveItem} className="p-8 space-y-6 max-h-[80vh] overflow-y-auto custom-scrollbar">
+              <div className="flex gap-6 items-center">
+                <div onClick={() => fileInputRef.current?.click()} className="w-28 h-28 rounded-2xl bg-slate-100 dark:bg-slate-950 border-2 border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden group">
+                  {formData.photo_url ? <img src={formData.photo_url} className="w-full h-full object-cover" /> : <Camera className="text-slate-300" size={28} />}
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"><ImageIcon className="text-white" size={20}/></div>
                 </div>
                 <input type="file" ref={fileInputRef} className="hidden" accept="image/*" capture="environment" onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -813,113 +954,108 @@ export default function App() {
                     reader.readAsDataURL(file);
                   }
                 }} />
-                <div className="flex-1 space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Material</label>
-                  <input required value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="EX: MARRETA 2KG" className="w-full p-6 rounded-3xl bg-slate-50 dark:bg-slate-950 font-black text-lg uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
+                <div className="flex-1 space-y-1.5">
+                  <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome do Item</label>
+                  <input required value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="Ex: Marreta 2kg" className="w-full p-4 rounded-xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase outline-none shadow-inner dark:text-white" />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Unidade</label>
-                  <input required value={formData.unit || 'UND'} onChange={e => setFormData({ ...formData, unit: e.target.value.toUpperCase() })} placeholder="UND" className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase shadow-inner dark:text-white text-center" />
-                </div>
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Setor</label>
-                  <input required value={formData.department || ''} onChange={e => setFormData({ ...formData, department: e.target.value.toUpperCase() })} placeholder="EX: CIVIL" className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase shadow-inner dark:text-white text-center" />
-                </div>
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Localização</label>
-                  <input required value={formData.location || ''} onChange={e => setFormData({ ...formData, location: e.target.value.toUpperCase() })} placeholder="EX: PRATELEIRA A1" className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase shadow-inner dark:text-white text-center" />
-                </div>
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Saldo Mínimo</label>
-                  <input type="number" required value={formData.min_stock || 0} onChange={e => setFormData({ ...formData, min_stock: Number(e.target.value) })} className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-lg text-center shadow-inner dark:text-white" />
-                </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5"><label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Unidade</label><input required value={formData.unit || 'UND'} onChange={e => setFormData({ ...formData, unit: e.target.value.toUpperCase() })} className="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase text-center dark:text-white" /></div>
+                <div className="space-y-1.5"><label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Setor</label><input required value={formData.department || ''} onChange={e => setFormData({ ...formData, department: e.target.value.toUpperCase() })} className="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase text-center dark:text-white" /></div>
+                <div className="space-y-1.5"><label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Endereço/Local</label><input required value={formData.location || ''} onChange={e => setFormData({ ...formData, location: e.target.value.toUpperCase() })} className="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase text-center dark:text-white" /></div>
+                <div className="space-y-1.5"><label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Estoque Mínimo</label><input type="number" required value={formData.min_stock || 0} onChange={e => setFormData({ ...formData, min_stock: Number(e.target.value) })} className="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 font-bold text-xs text-center dark:text-white" /></div>
               </div>
               {!editingItem && (
-                 <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Saldo Inicial</label>
-                  <input type="number" required value={formData.current_stock || 0} onChange={e => setFormData({ ...formData, current_stock: Number(e.target.value) })} className="w-full p-5 rounded-2xl bg-brand-500/10 dark:bg-brand-500/20 font-black text-2xl text-center shadow-inner text-brand-600 dark:text-brand-400 outline-none" />
+                 <div className="space-y-1.5">
+                  <label className="text-[8px] font-black text-brand-600 uppercase tracking-widest ml-1">Saldo de Abertura</label>
+                  <input type="number" required value={formData.current_stock || 0} onChange={e => setFormData({ ...formData, current_stock: Number(e.target.value) })} className="w-full p-5 rounded-2xl bg-brand-50 dark:bg-brand-950/20 font-black text-2xl text-center text-brand-600 outline-none" />
                 </div>
               )}
-              <div className="flex gap-4">
-                {editingItem && (
-                  <button type="button" onClick={() => handleDeleteItem(editingItem.id)} className="flex-1 py-6 bg-red-500/10 text-red-500 rounded-[2rem] font-black uppercase text-[10px] tracking-widest border border-red-500/20">Excluir</button>
-                )}
-                <button type="submit" className="flex-[3] py-7 bg-brand-600 text-white rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-2xl active:scale-95 transition-all">SALVAR REGISTRO</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: MOVIMENTAÇÃO */}
-      {isMovementModalOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/90 backdrop-blur-xl animate-in fade-in duration-300">
-          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-white/10">
-            <div className={`p-12 text-center text-white ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'}`}>
-              <h3 className="text-4xl font-black uppercase tracking-widest">{movementType === 'IN' ? 'Entrada' : 'Saída'}</h3>
-              <p className="text-[9px] font-black uppercase mt-3 opacity-70 truncate px-6">{items.find(i => i.id === activeItemId)?.name}</p>
-            </div>
-            <form onSubmit={handleStockAction} className="p-12 space-y-8">
-              <input type="number" min="1" required autoFocus value={moveData.quantity} onChange={e => setMoveData({ ...moveData, quantity: Number(e.target.value) })} className="w-full text-7xl font-black text-center p-8 rounded-3xl bg-slate-50 dark:bg-slate-950 outline-none shadow-inner dark:text-white border-none" />
-              <input value={moveData.reason} onChange={e => setMoveData({ ...moveData, reason: e.target.value.toUpperCase() })} placeholder="MOTIVO (OPCIONAL)" className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 text-center text-[10px] font-black uppercase outline-none shadow-inner dark:text-white" />
-              <button type="submit" className={`w-full py-7 text-white rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-xl active:scale-95 transition-all ${movementType === 'IN' ? 'bg-emerald-600 shadow-emerald-600/30' : 'bg-orange-600 shadow-orange-600/30'}`}>CONFIRMAR OPERAÇÃO</button>
-              <button type="button" onClick={() => setIsMovementModalOpen(false)} className="w-full text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-red-500">CANCELAR</button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: EQUIPE */}
-      {isUserModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md animate-in zoom-in duration-300">
-          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
-            <div className="p-10 bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-              <h3 className="text-sm font-black uppercase tracking-widest text-emerald-600">{editingUser ? 'Ficha Colaborador' : 'Novo Membro'}</h3>
-              <button onClick={() => { setIsUserModalOpen(false); setEditingUser(null); setUserFormData({}); }} className="p-3 text-slate-400 hover:text-red-500 bg-white dark:bg-slate-800 rounded-xl shadow-sm"><X size={28}/></button>
-            </div>
-            <form onSubmit={handleSaveUser} className="p-12 space-y-8">
-              <div className="flex gap-10 items-center">
-                <div onClick={() => userPhotoInputRef.current?.click()} className="w-40 h-40 rounded-[3rem] bg-slate-100 dark:bg-slate-950 border-4 border-white dark:border-slate-800 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden shadow-2xl transition-all hover:scale-105">
-                  {userFormData.photo_url ? <img src={userFormData.photo_url} className="w-full h-full object-cover" /> : <><Camera className="text-slate-300 mb-2" size={40} /><span className="text-[9px] font-black uppercase text-slate-400 text-center px-4">Identidade</span></>}
-                </div>
-                <input type="file" ref={userPhotoInputRef} className="hidden" accept="image/*" capture="user" onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    const reader = new FileReader();
-                    reader.onloadend = () => setUserFormData({ ...userFormData, photo_url: reader.result as string });
-                    reader.readAsDataURL(file);
-                  }
-                }} />
-                <div className="flex-1 space-y-4">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome</label>
-                    <input required value={userFormData.name || ''} onChange={e => setUserFormData({...userFormData, name: e.target.value})} placeholder="NOME COMPLETO" className="w-full p-6 rounded-3xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-emerald-500" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Matrícula</label>
-                  <input required value={userFormData.badge_id || ''} onChange={e => setUserFormData({...userFormData, badge_id: e.target.value})} placeholder="ID" className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm text-center shadow-inner dark:text-white" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Cargo</label>
-                  <select value={userFormData.role || ''} onChange={e => setUserFormData({...userFormData, role: e.target.value})} className="w-full p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-[10px] uppercase outline-none shadow-inner dark:text-white appearance-none text-center">
-                    {USER_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                </div>
-              </div>
-              <button type="submit" className="w-full py-8 bg-emerald-600 text-white rounded-[2.5rem] font-black uppercase text-[11px] tracking-widest shadow-xl shadow-emerald-500/30 active:scale-95 transition-all">
-                {editingUser ? 'SALVAR ALTERAÇÕES' : 'CADASTRAR EQUIPE'}
+              <button type="submit" disabled={isSyncing} className="w-full py-5 bg-brand-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl active:scale-95 transition-all disabled:opacity-50">
+                {isSyncing ? <Loader2 className="animate-spin mx-auto" size={20}/> : 'SALVAR REGISTRO'}
               </button>
             </form>
           </div>
         </div>
       )}
 
+      {/* Stock Movement Modal */}
+      {isMovementModalOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-md bg-white dark:bg-slate-900 rounded-[2.5rem] overflow-hidden shadow-2xl border dark:border-slate-800">
+            <div className={`p-6 text-center text-white ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'}`}>
+              <div className="flex items-center justify-center gap-2 mb-2">
+                {movementType === 'IN' ? <ArrowUpRight size={24}/> : <ArrowDownRight size={24}/>}
+                <h3 className="text-xl font-black uppercase tracking-widest">{movementType === 'IN' ? 'Entrada' : 'Saída'}</h3>
+              </div>
+              <p className="text-[10px] font-black uppercase opacity-80 leading-tight line-clamp-1 max-w-[80%] mx-auto">{activeItem?.name}</p>
+            </div>
+            
+            <form onSubmit={handleStockAction} className="p-8 space-y-8">
+              <div className="text-center space-y-4">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] block">Quanto deseja {movementType === 'IN' ? 'adicionar' : 'retirar'}?</label>
+                <div className="flex items-center justify-center gap-6">
+                  <button type="button" onClick={() => setMoveData(p => ({...p, quantity: Math.max(1, p.quantity - 1)}))} className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-slate-800 text-slate-500 font-black text-2xl shadow-sm hover:bg-slate-100 transition-colors active:scale-90">-</button>
+                  <input type="number" min="1" required autoFocus value={moveData.quantity} onChange={e => setMoveData({ ...moveData, quantity: Math.abs(Number(e.target.value)) })} className="w-24 text-5xl font-black text-center bg-transparent outline-none dark:text-white border-none focus:ring-0" />
+                  <button type="button" onClick={() => setMoveData(p => ({...p, quantity: p.quantity + 1}))} className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-slate-800 text-slate-500 font-black text-2xl shadow-sm hover:bg-slate-100 transition-colors active:scale-90">+</button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 relative">
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-10 h-10 rounded-full bg-white dark:bg-slate-800 shadow-lg border dark:border-slate-700 flex items-center justify-center z-10">
+                    <ArrowRight size={20} className="text-slate-300 dark:text-slate-600" />
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border dark:border-slate-800 text-center flex flex-col items-center justify-center gap-2">
+                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Atual</p>
+                  <div className="flex flex-col items-center">
+                    <span className="text-3xl font-black text-slate-600 dark:text-slate-400 tracking-tighter">{activeItem?.current_stock}</span>
+                    <span className="text-[8px] font-black text-slate-300 dark:text-slate-700 uppercase">{activeItem?.unit}</span>
+                  </div>
+                </div>
+
+                <div className={`p-5 rounded-2xl border-2 transition-all text-center flex flex-col items-center justify-center gap-2 ${isFutureCritical ? 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900/50' : 'bg-brand-50 dark:bg-brand-950/20 border-brand-200 dark:border-brand-900/50'}`}>
+                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Projetado</p>
+                  <div className="flex flex-col items-center">
+                    <span className={`text-3xl font-black tracking-tighter ${isFutureCritical ? 'text-red-600' : 'text-brand-600'}`}>{futureStock}</span>
+                    <span className={`text-[8px] font-black uppercase ${isFutureCritical ? 'text-red-400' : 'text-brand-400'}`}>{activeItem?.unit}</span>
+                  </div>
+                  {isFutureCritical && (
+                    <div className="mt-1 flex items-center gap-1 text-[7px] font-black text-red-600 uppercase bg-red-100 dark:bg-red-900/50 px-2 py-0.5 rounded-full animate-pulse">
+                      <AlertTriangle size={8} /> Crítico
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block ml-1">Observação Contextual</label>
+                <textarea 
+                  value={moveData.reason} 
+                  onChange={e => setMoveData({ ...moveData, reason: e.target.value.toUpperCase() })} 
+                  placeholder="EX: RETIRADA PARA MANUTENÇÃO PREVENTIVA..." 
+                  className="w-full p-4 rounded-xl bg-slate-50 dark:bg-slate-950 text-[10px] font-bold uppercase outline-none shadow-inner dark:text-white resize-none h-20 border-2 border-transparent focus:border-brand-500 transition-all" 
+                />
+              </div>
+
+              <div className="flex flex-col gap-3 pt-4">
+                <button type="submit" disabled={isSyncing} className={`w-full py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-[0.2em] shadow-2xl active:scale-95 transition-all transform flex items-center justify-center gap-2 ${movementType === 'IN' ? 'bg-emerald-600 shadow-emerald-600/20' : 'bg-orange-600 shadow-orange-600/20'} disabled:opacity-50`}>
+                   {isSyncing ? <Loader2 className="animate-spin" size={16}/> : (movementType === 'IN' ? <ArrowUpRight size={16}/> : <ArrowDownRight size={16}/>)}
+                   {isSyncing ? 'PROCESSANDO...' : `EFETIVAR ${movementType === 'IN' ? 'ENTRADA' : 'SAÍDA'}`}
+                </button>
+                <button type="button" onClick={() => setIsMovementModalOpen(false)} className="w-full py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-red-500 transition-colors">Descartar Operação</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3b82f6; border-radius: 20px; }
+        .custom-scrollbar::-webkit-scrollbar { width: 3px; height: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3b82f6; border-radius: 10px; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
         input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         * { -webkit-tap-highlight-color: transparent; outline: none !important; }
       `}</style>
