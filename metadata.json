@@ -1,6 +1,6 @@
 {
-  "name": "Controle de Estoque CARPA",
-  "description": "Sistema profissional de inventário com sincronização resiliente e suporte multiusuário simultâneo.",
+  "name": "AG SYSTEM - Controle de Produção",
+  "description": "Sistema corporativo de gestão de ativos e insumos em tempo real com auditoria completa.",
   "requestFramePermissions": [
     "camera"
   ]

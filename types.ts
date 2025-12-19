@@ -11,6 +11,7 @@ export interface InventoryItem {
   photo_url?: string;
   last_updated: string;
   last_updated_by: string;
+  is_active?: boolean; // Para exclusão lógica conforme solicitado
 }
 
 export interface MovementLog {
@@ -28,9 +29,10 @@ export interface MovementLog {
 export interface UserProfile {
   badge_id: string;
   name: string;
-  role: string; // Ex: 'Estoquista', 'Gerente', 'Técnico'
+  role: string;
   photo_url?: string;
   created_at: string;
+  last_seen?: string;
 }
 
 export interface UserSession {
@@ -48,11 +50,10 @@ export enum AppView {
   SETTINGS = 'CONFIGURAÇÕES'
 }
 
-// Added PendingAction interface to fix the module export error in services/offlineStorage.ts
 export interface PendingAction {
   id: string;
-  type: string;
-  table?: string;
+  type: 'UPSERT_ITEM' | 'INSERT_MOVEMENT' | 'UPDATE_USER' | 'DELETE_ITEM';
+  table: 'inventory_items' | 'movements' | 'users';
   data: any;
   timestamp: number;
 }

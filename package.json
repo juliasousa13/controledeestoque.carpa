@@ -1,5 +1,5 @@
 {
-  "name": "controle-de-estoque-carpa",
+  "name": "ag-system---controle-de-produção",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,7 +13,9 @@
     "react": "^19.2.1",
     "lucide-react": "^0.555.0",
     "react-dom": "^19.2.1",
-    "@supabase/supabase-js": "2"
+    "@supabase/supabase-js": "2",
+    "@vitejs/plugin-react": "^5.1.2",
+    "vite": "^7.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
