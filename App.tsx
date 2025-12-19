@@ -314,7 +314,7 @@ export default function App() {
   };
 
   const handleToggleSelectAll = () => {
-    if (selectedItemIds.length === filteredItems.length) {
+    if (selectedItemIds.length === filteredItems.length && filteredItems.length > 0) {
       setSelectedItemIds([]);
     } else {
       setSelectedItemIds(filteredItems.map(i => i.id));
@@ -324,14 +324,16 @@ export default function App() {
   const handleDeleteItem = async (id: string) => {
     const item = items.find(i => i.id === id);
     if (!item || !user) return;
-    if (!confirm(`Auditoria: Deseja desativar o material "${item.name}"?`)) return;
+    if (!confirm(`Auditoria: Deseja desativar permanentemente o material "${item.name}"?`)) return;
 
     const now = new Date().toISOString();
-    setItems(items.filter(i => i.id !== id));
+    
+    // Atualização Otimista
+    setItems(prev => prev.filter(i => i.id !== id));
     setSelectedItemIds(prev => prev.filter(selectedId => selectedId !== id));
 
     const mov: MovementLog = {
-      id: `MOV-${Date.now()}`,
+      id: `MOV-DEL-${Date.now()}`,
       item_id: item.id,
       item_name: item.name,
       type: 'DELETE',
@@ -344,6 +346,9 @@ export default function App() {
     
     addToSyncQueue({ type: 'DELETE_ITEM', table: 'inventory_items', data: { id: item.id } });
     addToSyncQueue({ type: 'INSERT_MOVEMENT', table: 'movements', data: mov });
+    
+    setIsItemModalOpen(false);
+    setEditingItem(null);
     processSyncQueue();
   };
 
@@ -354,12 +359,12 @@ export default function App() {
     const now = new Date().toISOString();
     const toDelete = items.filter(i => selectedItemIds.includes(i.id));
     
-    setItems(items.filter(i => !selectedItemIds.includes(i.id)));
+    setItems(prev => prev.filter(i => !selectedItemIds.includes(i.id)));
     setSelectedItemIds([]);
 
     for (const item of toDelete) {
       const mov: MovementLog = {
-        id: `MOV-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: `MOV-BATCH-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         item_id: item.id,
         item_name: item.name,
         type: 'DELETE',
@@ -572,7 +577,7 @@ export default function App() {
               <>
                 {selectedItemIds.length > 0 && (
                   <button onClick={handleDeleteBatch} className="bg-red-600 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center gap-3 shadow-lg shadow-red-500/20 hover:scale-105 active:scale-95 transition-all">
-                    <Trash2 size={16}/> Desativar ({selectedItemIds.length})
+                    <Trash2 size={16}/> Excluir Selecionados ({selectedItemIds.length})
                   </button>
                 )}
                 <button onClick={() => { setEditingItem(null); setFormData({}); setIsItemModalOpen(true); }} className="bg-brand-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center gap-3 shadow-lg shadow-brand-500/20 hover:scale-105 active:scale-95 transition-all">
@@ -645,7 +650,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="p-12 rounded-[4rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                    <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-3"><BarChart3 size={20} className="text-brand-500"/> Atividade Recente</h4>
+                    <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-3"><BarChart3 size={20} className="text-brand-500"/> Auditoria Recente</h4>
                     <div className="space-y-4 max-h-[250px] overflow-y-auto pr-4 custom-scrollbar">
                       {movements.slice(0, 6).map(m => (
                         <div key={m.id} className="flex items-center gap-5 p-4 rounded-3xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800 hover:border-brand-500 transition-all">
@@ -678,7 +683,7 @@ export default function App() {
                       ))}
                     </div>
                     <button onClick={handleToggleSelectAll} className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 text-slate-400 hover:text-brand-600 transition-all flex items-center gap-2" title="Selecionar Tudo">
-                      {selectedItemIds.length === filteredItems.length ? <CheckSquare className="text-brand-600" size={24}/> : <Square size={24}/>}
+                      {selectedItemIds.length === filteredItems.length && filteredItems.length > 0 ? <CheckSquare className="text-brand-600" size={24}/> : <Square size={24}/>}
                       <span className="text-[10px] font-black uppercase tracking-widest">Tudo</span>
                     </button>
                   </div>
@@ -712,11 +717,17 @@ export default function App() {
                           <button onClick={() => { setActiveItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} title="Entrada" className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500 hover:text-white transition-all"><Plus size={14}/></button>
                           <button onClick={() => { setActiveItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} title="Saída" className="p-2 bg-orange-500/10 text-orange-500 rounded-lg hover:bg-orange-500 hover:text-white transition-all"><TrendingDown size={14}/></button>
                           <button onClick={() => { setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} title="Editar" className="p-2 bg-slate-100 dark:bg-slate-800 text-slate-400 rounded-lg hover:bg-brand-600 hover:text-white transition-all"><Edit3 size={14}/></button>
-                          <button onClick={() => handleDeleteItem(item.id)} title="Excluir" className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all"><Trash2 size={14}/></button>
+                          <button onClick={() => handleDeleteItem(item.id)} title="Excluir Permanentemente" className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all"><Trash2 size={14}/></button>
                         </div>
                       </div>
                     </div>
                   ))}
+                  {filteredItems.length === 0 && (
+                    <div className="col-span-full py-20 flex flex-col items-center justify-center opacity-30 text-center">
+                      <Box size={64} className="mb-4" />
+                      <p className="text-xs font-black uppercase tracking-widest">Nenhum item encontrado no inventário ativo</p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -849,7 +860,19 @@ export default function App() {
           <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
             <div className="p-10 bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
               <h3 className="text-sm font-black uppercase tracking-widest text-brand-600">Ficha do Material</h3>
-              <button onClick={() => setIsItemModalOpen(false)} className="p-2 text-slate-400 hover:text-red-500"><X size={32}/></button>
+              <div className="flex gap-2">
+                {editingItem && (
+                   <button 
+                    type="button"
+                    onClick={() => handleDeleteItem(editingItem.id)}
+                    className="p-2 text-red-500 hover:bg-red-500/10 rounded-xl transition-all"
+                    title="Excluir Permanentemente"
+                  >
+                    <Trash2 size={24}/>
+                  </button>
+                )}
+                <button onClick={() => setIsItemModalOpen(false)} className="p-2 text-slate-400 hover:text-red-500"><X size={32}/></button>
+              </div>
             </div>
             <form onSubmit={handleSaveItem} className="p-12 space-y-8">
               <div className="flex gap-8 items-center">
@@ -922,7 +945,7 @@ export default function App() {
       {/* MODAL: MOVIMENTAÇÃO */}
       {isMovementModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/90 backdrop-blur-xl animate-in fade-in duration-300">
-          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-white/10">
+          <div className="w-full max-sm bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-white/10">
             <div className={`p-12 text-center text-white ${movementType === 'IN' ? 'bg-emerald-600 shadow-lg shadow-emerald-500/20' : 'bg-orange-600 shadow-lg shadow-orange-500/20'}`}>
               <h3 className="text-4xl font-black uppercase tracking-widest">{movementType === 'IN' ? 'Entrada' : 'Saída'}</h3>
               <p className="text-[9px] font-black uppercase mt-3 opacity-70 truncate px-6">{items.find(i => i.id === activeItemId)?.name}</p>
