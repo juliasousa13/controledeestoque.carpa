@@ -3,18 +3,17 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { 
   LayoutDashboard, Package, Plus, Search, Trash2, Moon, Sun, Menu, X, 
   Camera, AlertTriangle, Loader2, RefreshCw, TrendingDown, Box, 
-  History, Activity, Edit3, Users, FileSpreadsheet, 
+  History, Activity, Edit3, Users as UsersIcon, FileSpreadsheet, 
   Upload, CheckCircle2, User as UserIcon, LogOut, ChevronRight,
   Info, Check, Database, ShieldCheck, Settings, Download, Filter,
-  Sparkles, BrainCircuit, ListChecks, UserPlus, Zap, Globe, Signal, SignalLow,
-  PieChart, BarChart3, DatabaseZap, Clock, ShieldAlert, CheckSquare, Square, Image as ImageIcon,
-  Wifi, WifiOff, Tags, Layers
+  Sparkles, BrainCircuit, ListChecks, UserPlus, Zap, Globe, Signal, 
+  PieChart, BarChart3, DatabaseZap, Clock, ShieldAlert, CheckSquare, Square, 
+  Image as ImageIcon
 } from 'lucide-react';
 import { InventoryItem, MovementLog, UserSession, AppView, UserProfile, PendingAction, Department } from './types';
 import { Logo } from './components/Logo';
 import { supabase } from './services/supabaseClient';
 import { saveOfflineData, loadOfflineData, addToSyncQueue, getSyncQueue, removeFromQueue } from './services/offlineStorage';
-// Fix: Importing Gemini service to provide automated product insights
 import { generateProductInsights } from './services/geminiService';
 
 declare const XLSX: any;
@@ -46,7 +45,6 @@ export default function App() {
   // App Logic States
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  // Fix: Added state for IA loading indicator
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const [lastSync, setLastSync] = useState<Date | null>(() => {
     const saved = localStorage.getItem('carpa_last_sync');
@@ -105,7 +103,7 @@ export default function App() {
         if (action.type === 'UPSERT_ITEM') error = (await supabase.from('inventory_items').upsert(action.data)).error;
         if (action.type === 'INSERT_MOVEMENT') error = (await supabase.from('movements').insert(action.data)).error;
         if (action.type === 'DELETE_ITEM') error = (await supabase.from('inventory_items').update({ is_active: false }).eq('id', action.data.id)).error;
-        if (action.type === 'UPDATE_USER') error = (await supabase.from('users').upsert(action.data)).error;
+        if (action.type === 'UPDATE_USER') error = (await supabase.from('Users').upsert(action.data)).error;
         if (action.type === 'UPSERT_DEPT') error = (await supabase.from('departments').upsert(action.data)).error;
         
         if (error) throw error;
@@ -124,7 +122,7 @@ export default function App() {
       const [itRes, movRes, userRes, depRes] = await Promise.all([
         supabase.from('inventory_items').select('*').eq('is_active', true).order('name'),
         supabase.from('movements').select('*').order('timestamp', { ascending: false }).limit(300),
-        supabase.from('users').select('*').order('name'),
+        supabase.from('Users').select('*').order('name'),
         supabase.from('departments').select('*').order('name')
       ]);
 
@@ -139,7 +137,8 @@ export default function App() {
       setLastSync(new Date());
       setConnStatus('online');
       await processSyncQueue();
-    } catch {
+    } catch (e) {
+      console.error("Fetch Error:", e);
       setConnStatus('offline');
     } finally {
       setIsLoading(false);
@@ -149,10 +148,10 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-    const channel = supabase.channel('realtime-ag-v3')
+    const channel = supabase.channel('realtime-ag-system')
       .on('postgres_changes', { event: '*', table: 'inventory_items', schema: 'public' }, () => fetchData(false))
       .on('postgres_changes', { event: '*', table: 'movements', schema: 'public' }, () => fetchData(false))
-      .on('postgres_changes', { event: '*', table: 'users', schema: 'public' }, () => fetchData(false))
+      .on('postgres_changes', { event: '*', table: 'Users', schema: 'public' }, () => fetchData(false))
       .on('postgres_changes', { event: '*', table: 'departments', schema: 'public' }, () => fetchData(false))
       .subscribe();
 
@@ -208,7 +207,7 @@ export default function App() {
     localStorage.setItem('carpa_user', JSON.stringify(session));
     const newUser: UserProfile = { badge_id: tempBadge, name: tempName.toUpperCase(), role: 'Auxiliar de almoxarifado', created_at: new Date().toISOString() };
     setAllUsers(prev => [...prev, newUser]);
-    addToSyncQueue({ type: 'UPDATE_USER', table: 'users', data: newUser });
+    addToSyncQueue({ type: 'UPDATE_USER', table: 'Users', data: newUser });
     processSyncQueue();
   };
 
@@ -439,28 +438,40 @@ export default function App() {
     };
 
     setAllUsers(prev => {
-      const exists = prev.some(user => user.badge_id === editingUser?.badge_id);
-      if (exists) {
-        return prev.map(user => user.badge_id === editingUser?.badge_id ? u : user);
+      const exists = prev.some(user => user.badge_id === u.badge_id);
+      if (exists || editingUser) {
+        return prev.map(user => user.badge_id === (editingUser?.badge_id || u.badge_id) ? u : user);
       }
       return [...prev, u];
     });
 
-    // If editing self, update active session
-    if (user?.badgeId === editingUser?.badge_id) {
+    if (user?.badgeId === (editingUser?.badge_id || u.badge_id)) {
        const newSession = { ...user, name: u.name, role: u.role, photoUrl: u.photo_url || undefined };
        setUser(newSession);
        localStorage.setItem('carpa_user', JSON.stringify(newSession));
     }
 
-    addToSyncQueue({ type: 'UPDATE_USER', table: 'users', data: u });
+    addToSyncQueue({ type: 'UPDATE_USER', table: 'Users', data: u });
     setIsUserModalOpen(false);
     setEditingUser(null);
     setUserFormData({});
     processSyncQueue();
   };
 
-  // --- Views ---
+  const handleDeleteUser = async (badgeId: string) => {
+    if (badgeId === user?.badgeId) {
+      alert("Você não pode excluir seu próprio perfil.");
+      return;
+    }
+    if (!window.confirm("Deseja realmente remover este colaborador da equipe?")) return;
+
+    setAllUsers(prev => prev.filter(u => u.badge_id !== badgeId));
+    // Logical deletion is handled by not including it in fetching or special flag
+    // For Users table, typically we'd set an is_active flag if we want audit history
+    setIsUserModalOpen(false);
+    setEditingUser(null);
+    setUserFormData({});
+  };
 
   if (!user) return (
     <div className="h-screen flex items-center justify-center bg-slate-100 dark:bg-[#020617] p-6 font-sans">
@@ -515,8 +526,8 @@ export default function App() {
               { id: AppView.DASHBOARD, icon: LayoutDashboard, label: 'Painel Geral' },
               { id: AppView.INVENTORY, icon: Package, label: 'Almoxarifado' },
               { id: AppView.MOVEMENTS, icon: History, label: 'Auditoria' },
-              { id: AppView.USERS, icon: Users, label: 'Colaboradores' },
-              { id: AppView.SETTINGS, icon: RefreshCw, label: 'Gateway' }
+              { id: AppView.USERS, icon: UsersIcon, label: 'Equipe' },
+              { id: AppView.SETTINGS, icon: RefreshCw, label: 'Configurações' }
             ].map(v => (
               <button key={v.id} onClick={() => { setCurrentView(v.id); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold text-[11px] uppercase tracking-wider transition-all ${currentView === v.id ? 'bg-brand-600 text-white shadow-xl translate-x-1' : 'text-slate-400 hover:bg-brand-500/10 hover:text-brand-500'}`}>
@@ -561,6 +572,11 @@ export default function App() {
                   <Plus size={18}/> NOVO ITEM
                 </button>
               </>
+            )}
+            {currentView === AppView.USERS && (
+              <button onClick={() => { setEditingUser(null); setUserFormData({}); setIsUserModalOpen(true); }} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center gap-3 shadow-lg hover:scale-105 transition-all">
+                <UserPlus size={18}/> NOVO MEMBRO
+              </button>
             )}
           </div>
         </header>
@@ -638,12 +654,6 @@ export default function App() {
                           </span>
                         </div>
                       ))}
-                      {dailyLogs.length === 0 && (
-                        <div className="h-full flex flex-col items-center justify-center text-slate-400 py-10 opacity-30">
-                           <Clock size={48} className="mb-4" />
-                           <p className="text-[10px] font-black uppercase tracking-widest">Sem atividades hoje</p>
-                        </div>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -699,7 +709,6 @@ export default function App() {
                           <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">{item.unit}</span>
                         </div>
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {/* Fix: Added edit functionality to individual items */}
                           <button onClick={() => { setEditingItem(item); setFormData(item); setIsItemModalOpen(true); }} className="p-2 bg-brand-500/10 text-brand-500 rounded-lg hover:bg-brand-500 hover:text-white transition-all"><Edit3 size={14}/></button>
                           <button onClick={() => { setActiveItemId(item.id); setMovementType('IN'); setIsMovementModalOpen(true); }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500 hover:text-white transition-all"><Plus size={14}/></button>
                           <button onClick={() => { setActiveItemId(item.id); setMovementType('OUT'); setIsMovementModalOpen(true); }} className="p-2 bg-orange-500/10 text-orange-500 rounded-lg hover:bg-orange-500 hover:text-white transition-all"><TrendingDown size={14}/></button>
@@ -712,12 +721,12 @@ export default function App() {
               </div>
             )}
 
-            {/* VIEW: AUDITORIA (LOGS) */}
+            {/* VIEW: MOVEMENTS (HISTÓRICO) */}
             {currentView === AppView.MOVEMENTS && (
               <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-10">
                 <div className="flex items-center justify-between mb-8">
                    <div>
-                    <h3 className="text-xl font-black tracking-tighter uppercase">Histórico Geral de Atividades</h3>
+                    <h3 className="text-xl font-black tracking-tighter uppercase">Histórico Geral</h3>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Auditoria permanente do sistema</p>
                    </div>
                    <button onClick={handleExport} className="p-4 bg-brand-600 text-white rounded-2xl flex items-center gap-3 font-black text-[10px] uppercase shadow-xl hover:scale-105 transition-all">
@@ -731,7 +740,6 @@ export default function App() {
                         <div className={`w-14 h-14 rounded-2xl flex items-center justify-center font-black ${
                           m.type === 'IN' ? 'bg-emerald-500/10 text-emerald-500' : 
                           m.type === 'OUT' ? 'bg-orange-500/10 text-orange-500' : 
-                          m.type === 'DELETE' ? 'bg-red-500/10 text-red-500' :
                           'bg-brand-500/10 text-brand-500'
                         }`}>
                           {m.type === 'IN' ? <Plus size={24}/> : m.type === 'OUT' ? <TrendingDown size={24}/> : <Activity size={24}/>}
@@ -748,7 +756,6 @@ export default function App() {
                         <span className={`text-2xl font-black tracking-tighter ${m.type === 'IN' ? 'text-emerald-500' : m.type === 'OUT' ? 'text-orange-500' : 'text-slate-400'}`}>
                           {m.type === 'IN' ? '+' : m.type === 'OUT' ? '-' : ''}{m.quantity || 0}
                         </span>
-                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{m.type}</p>
                       </div>
                     </div>
                   ))}
@@ -756,47 +763,47 @@ export default function App() {
               </div>
             )}
 
-            {/* VIEW: EQUIPE (COLABORADORES) */}
+            {/* VIEW: USERS (EQUIPE) */}
             {currentView === AppView.USERS && (
               <div className="space-y-10 animate-in slide-in-from-bottom-10">
-                <div className="flex justify-between items-center mb-10">
-                   <h3 className="text-xl font-black tracking-tighter uppercase">Corpo Técnico</h3>
-                   <button onClick={() => { setEditingUser(null); setUserFormData({}); setIsUserModalOpen(true); }} className="px-6 py-4 bg-emerald-600 text-white rounded-2xl font-black text-[10px] uppercase shadow-lg hover:scale-105 transition-all">Novo Colaborador</button>
-                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                   {allUsers.map(u => (
                     <div 
                       key={u.badge_id} 
                       onClick={() => { setEditingUser(u); setUserFormData(u); setIsUserModalOpen(true); }}
-                      className="p-10 bg-white dark:bg-slate-900 rounded-[4rem] border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col items-center text-center group transition-all hover:border-brand-500 cursor-pointer hover:scale-[1.02]"
+                      className="p-10 bg-white dark:bg-slate-900 rounded-[4rem] border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col items-center text-center group transition-all hover:border-emerald-500 cursor-pointer hover:scale-[1.02] relative"
                     >
-                      <div className="w-24 h-24 rounded-[2rem] bg-brand-600 flex items-center justify-center text-white font-black text-4xl shadow-lg mb-6 overflow-hidden relative">
-                        {u.photo_url ? <img src={u.photo_url} className="w-full h-full object-cover" /> : u.name.charAt(0)}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                      <div className="w-24 h-24 rounded-[2.5rem] bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-emerald-600 font-black text-4xl shadow-lg mb-6 overflow-hidden relative">
+                        {u.photo_url ? (
+                          <img src={u.photo_url} className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="opacity-40">{u.name.charAt(0)}</span>
+                        )}
+                        <div className="absolute inset-0 bg-emerald-600/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity backdrop-blur-[2px]">
                           <Edit3 className="text-white" size={24} />
                         </div>
                       </div>
-                      <h4 className="text-sm font-black uppercase tracking-widest mb-1">{u.name}</h4>
-                      <p className="text-[9px] font-bold text-brand-500 uppercase tracking-widest mb-4">{u.role}</p>
-                      <div className="px-4 py-2 bg-slate-50 dark:bg-slate-950 rounded-full text-[9px] font-black uppercase text-slate-500">MAT: {u.badge_id}</div>
+                      <h4 className="text-sm font-black uppercase tracking-widest mb-1 truncate w-full">{u.name}</h4>
+                      <p className="text-[9px] font-bold text-emerald-600 uppercase tracking-widest mb-4">{u.role}</p>
+                      <div className="px-5 py-2.5 bg-slate-50 dark:bg-slate-950 rounded-full text-[9px] font-black uppercase text-slate-500">MAT: {u.badge_id}</div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* VIEW: SETTINGS (GATEWAY) */}
+            {/* VIEW: SETTINGS (CONFIGURAÇÕES) */}
             {currentView === AppView.SETTINGS && (
               <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-bottom-10">
                 <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><Globe size={24} className="text-brand-600"/> Sincronismo Central</h4>
+                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><Globe size={24} className="text-brand-600"/> Gateway Sincronismo</h4>
                   <div className="space-y-4">
                     <div className="flex justify-between items-center p-6 bg-slate-50 dark:bg-slate-950 rounded-2xl">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Servidor Supabase</span>
-                      <span className="text-[10px] font-black uppercase text-emerald-500">ONLINE</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Database Status</span>
+                      <span className="text-[10px] font-black uppercase text-emerald-500">{connStatus.toUpperCase()}</span>
                     </div>
                     <div className="flex justify-between items-center p-6 bg-slate-50 dark:bg-slate-950 rounded-2xl">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Última atualização</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Última Sincronização</span>
                       <span className="text-[10px] font-black uppercase">{lastSync?.toLocaleString()}</span>
                     </div>
                     <button onClick={() => fetchData(true)} className="w-full py-6 bg-brand-600 text-white rounded-3xl font-black uppercase text-[11px] tracking-widest shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-all">
@@ -806,7 +813,7 @@ export default function App() {
                 </div>
 
                 <div className="p-10 rounded-[3rem] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl">
-                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><FileSpreadsheet size={24} className="text-emerald-600"/> Carga de Dados (Excel)</h4>
+                  <h4 className="text-sm font-black uppercase tracking-widest mb-10 flex items-center gap-5"><FileSpreadsheet size={24} className="text-emerald-600"/> Gestão de Dados (Excel)</h4>
                   <div className="grid grid-cols-2 gap-6">
                     <label className="flex flex-col items-center justify-center p-8 bg-emerald-500/5 border-2 border-dashed border-emerald-500/20 rounded-3xl cursor-pointer hover:bg-emerald-500/10 transition-all group">
                       <Upload className="text-emerald-600 mb-4 group-hover:scale-110 transition-transform" size={32}/>
@@ -826,11 +833,10 @@ export default function App() {
         </div>
       </main>
 
-      {/* MODAL: REGISTRO DE ITEM */}
+      {/* MODAL: ITEM */}
       {isItemModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md animate-in zoom-in duration-300">
           <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 relative">
-            
             <button 
               type="button"
               onClick={handleIAInsights}
@@ -840,10 +846,9 @@ export default function App() {
               {isGeneratingInsights ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={18} className="group-hover:animate-bounce" />}
               <span className="text-[9px] font-black uppercase tracking-widest">IA Insight</span>
             </button>
-
             <div className="p-10 bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
               <h3 className="text-sm font-black uppercase tracking-widest text-brand-600">{editingItem ? 'Editar Registro' : 'Novo Material'}</h3>
-              <button onClick={() => setIsItemModalOpen(false)} className="p-2 text-slate-400 hover:text-red-500"><X size={32}/></button>
+              <button onClick={() => setIsItemModalOpen(false)} className="p-2 text-slate-400 hover:text-red-500 transition-colors"><X size={32}/></button>
             </div>
             <form onSubmit={handleSaveItem} className="p-12 space-y-8">
               <div className="flex gap-8 items-center">
@@ -865,26 +870,26 @@ export default function App() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Setor / Departamento</label>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Setor</label>
                   <input required list="depts" value={formData.department || ''} onChange={e => setFormData({ ...formData, department: e.target.value })} placeholder="EX: CIVIL" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
                   <datalist id="depts">{dbDepartments.map(d => <option key={d.id} value={d.name} />)}</datalist>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Localização Física</label>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Localização</label>
                   <input required value={formData.location || ''} onChange={e => setFormData({ ...formData, location: e.target.value })} placeholder="EX: ALMOX-A1" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-bold text-xs uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-brand-500" />
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Saldo Atual</label>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Saldo</label>
                   <input type="number" required value={formData.current_stock || 0} onChange={e => setFormData({ ...formData, current_stock: Number(e.target.value) })} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-center shadow-inner dark:text-white outline-none" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Estoque Mínimo</label>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Mínimo</label>
                   <input type="number" required value={formData.min_stock || 0} onChange={e => setFormData({ ...formData, min_stock: Number(e.target.value) })} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-center shadow-inner dark:text-white outline-none" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">UNIDADE</label>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">UN</label>
                   <input value={formData.unit || 'UND'} onChange={e => setFormData({ ...formData, unit: e.target.value.toUpperCase() })} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-center shadow-inner dark:text-white outline-none" />
                 </div>
               </div>
@@ -894,18 +899,33 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: COLABORADOR (CRIAR E EDITAR) */}
+      {/* MODAL: EQUIPE */}
       {isUserModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-md animate-in zoom-in duration-300">
           <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
             <div className="p-10 bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-              <h3 className="text-sm font-black uppercase tracking-widest text-emerald-600">{editingUser ? 'Editar Perfil' : 'Novo Colaborador'}</h3>
-              <button onClick={() => { setIsUserModalOpen(false); setEditingUser(null); setUserFormData({}); }} className="p-2 text-slate-400 hover:text-red-500"><X size={32}/></button>
+              <h3 className="text-sm font-black uppercase tracking-widest text-emerald-600">{editingUser ? 'Ficha do Colaborador' : 'Novo Registro de Equipe'}</h3>
+              <div className="flex gap-2">
+                {editingUser && (
+                  <button 
+                    type="button" 
+                    onClick={() => handleDeleteUser(editingUser.badge_id)} 
+                    className="p-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all"
+                  >
+                    <Trash2 size={20}/>
+                  </button>
+                )}
+                <button onClick={() => { setIsUserModalOpen(false); setEditingUser(null); setUserFormData({}); }} className="p-2 text-slate-400 hover:text-red-500 transition-colors"><X size={32}/></button>
+              </div>
             </div>
             <form onSubmit={handleSaveUser} className="p-12 space-y-8">
-              <div className="flex gap-8 items-center">
-                <div onClick={() => userPhotoInputRef.current?.click()} className="w-32 h-32 rounded-[2.5rem] bg-slate-100 dark:bg-slate-950 border-2 border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden shadow-inner group">
-                  {userFormData.photo_url ? <img src={userFormData.photo_url} className="w-full h-full object-cover" /> : <><Camera className="text-slate-300 mb-2" size={32} /><span className="text-[8px] font-black uppercase text-slate-400 text-center">Alterar Foto</span></>}
+              <div className="flex gap-10 items-center">
+                <div onClick={() => userPhotoInputRef.current?.click()} className="w-36 h-36 rounded-[3rem] bg-slate-100 dark:bg-slate-950 border-2 border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center justify-center cursor-pointer relative overflow-hidden shadow-inner group transition-all hover:border-emerald-500">
+                  {userFormData.photo_url ? (
+                    <img src={userFormData.photo_url} className="w-full h-full object-cover" />
+                  ) : (
+                    <><Camera className="text-slate-300 mb-2" size={40} /><span className="text-[8px] font-black uppercase text-slate-400 text-center px-4">Foto de Identificação</span></>
+                  )}
                 </div>
                 <input type="file" ref={userPhotoInputRef} className="hidden" accept="image/*" capture="user" onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -915,37 +935,39 @@ export default function App() {
                     reader.readAsDataURL(file);
                   }
                 }} />
-                <div className="flex-1 space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo</label>
-                  <input required value={userFormData.name || ''} onChange={e => setUserFormData({...userFormData, name: e.target.value})} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white" />
+                <div className="flex-1 space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome Completo</label>
+                    <input required value={userFormData.name || ''} onChange={e => setUserFormData({...userFormData, name: e.target.value})} placeholder="NOME DO COLABORADOR" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-emerald-500" />
+                  </div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-6">
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Matrícula Profissional</label>
-                  <input required value={userFormData.badge_id || ''} onChange={e => setUserFormData({...userFormData, badge_id: e.target.value})} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white" />
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Matrícula</label>
+                  <input required value={userFormData.badge_id || ''} onChange={e => setUserFormData({...userFormData, badge_id: e.target.value})} placeholder="000000" className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-sm uppercase outline-none shadow-inner dark:text-white border-2 border-transparent focus:border-emerald-500" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Cargo / Função</label>
-                  <select value={userFormData.role || ''} onChange={e => setUserFormData({...userFormData, role: e.target.value})} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-[10px] uppercase outline-none shadow-inner dark:text-white appearance-none">
-                    <option value="" disabled>Selecione...</option>
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Cargo</label>
+                  <select value={userFormData.role || ''} onChange={e => setUserFormData({...userFormData, role: e.target.value})} className="w-full p-6 rounded-2xl bg-slate-50 dark:bg-slate-950 font-black text-[10px] uppercase outline-none shadow-inner dark:text-white appearance-none border-2 border-transparent focus:border-emerald-500">
+                    <option value="" disabled>Selecionar cargo...</option>
                     {USER_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
                 </div>
               </div>
-              <button type="submit" className="w-full py-7 bg-emerald-600 text-white rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-xl active:scale-95 transition-all">
-                {editingUser ? 'SALVAR ALTERAÇÕES' : 'CADASTRAR COLABORADOR'}
+              <button type="submit" className="w-full py-8 bg-emerald-600 text-white rounded-[2.5rem] font-black uppercase text-[11px] tracking-widest shadow-xl shadow-emerald-500/20 active:scale-95 transition-all">
+                {editingUser ? 'SALVAR ALTERAÇÕES' : 'CONFIRMAR CADASTRO'}
               </button>
             </form>
           </div>
         </div>
       )}
 
-      {/* MODAL: MOVIMENTAÇÃO RÁPIDA */}
+      {/* MODAL: MOVIMENTAÇÃO */}
       {isMovementModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/90 backdrop-blur-xl animate-in fade-in duration-300">
-          <div className="w-full max-sm bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-white/10">
-            <div className={`p-12 text-center text-white ${movementType === 'IN' ? 'bg-emerald-600 shadow-lg shadow-emerald-500/20' : 'bg-orange-600 shadow-lg shadow-orange-500/20'}`}>
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-[4rem] overflow-hidden shadow-2xl border border-white/10">
+            <div className={`p-12 text-center text-white ${movementType === 'IN' ? 'bg-emerald-600' : 'bg-orange-600'}`}>
               <h3 className="text-4xl font-black uppercase tracking-widest">{movementType === 'IN' ? 'Entrada' : 'Saída'}</h3>
               <p className="text-[9px] font-black uppercase mt-3 opacity-70 truncate px-6">{items.find(i => i.id === activeItemId)?.name}</p>
             </div>

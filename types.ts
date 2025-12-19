@@ -59,7 +59,7 @@ export enum AppView {
 export interface PendingAction {
   id: string;
   type: 'UPSERT_ITEM' | 'INSERT_MOVEMENT' | 'UPDATE_USER' | 'DELETE_ITEM' | 'UPSERT_DEPT';
-  table: 'inventory_items' | 'movements' | 'users' | 'departments';
+  table: 'inventory_items' | 'movements' | 'Users' | 'departments';
   data: any;
   timestamp: number;
 }
